@@ -1,0 +1,21 @@
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 001 Device 002: ID 046d:c547 Logitech, Inc. USB Receiver
+Bus 001 Device 003: ID 1a34:f517 ACRUX Receiver Update
+Bus 001 Device 004: ID 05e3:0610 Genesys Logic, Inc. Hub
+Bus 001 Device 005: ID 05e3:0608 Genesys Logic, Inc. Hub
+Bus 001 Device 006: ID 05e3:0610 Genesys Logic, Inc. Hub
+Bus 001 Device 008: ID 1ea7:0912 SHARKOON Technologies GmbH USB-HID GamingKeyBoard
+Bus 001 Device 009: ID 30be:100c Schiit Audio Schiit Modi+
+Bus 001 Device 010: ID 05e3:0610 Genesys Logic, Inc. Hub
+Bus 001 Device 011: ID 05e3:0608 Genesys Logic, Inc. Hub
+Bus 001 Device 012: ID 342d:e479 HS P75 2.4G Dongle
+Bus 001 Device 013: ID b58e:9e84 Blue Microphones Yeti Stereo Microphone
+Bus 001 Device 015: ID 1b1c:0c32 Corsair CORSAIR iCUE COMMANDER Core
+Bus 001 Device 016: ID 534d:2109 MacroSilicon 
+Bus 001 Device 017: ID 13d3:3558 IMC Networks Bluetooth Radio 
+Bus 001 Device 019: ID 048d:5702 Integrated Technology Express, Inc. RGB LED Controller
+Bus 001 Device 020: ID 1a86:55d3 QinHeng Electronics USB Single Serial
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 002 Device 002: ID 05e3:0612 Genesys Logic, Inc. Hub
+Bus 002 Device 003: ID 05e3:0626 Genesys Logic, Inc. Hub
+Bus 002 Device 004: ID 05e3:0626 Genesys Logic, Inc. Hub
