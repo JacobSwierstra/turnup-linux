@@ -15,6 +15,7 @@ from turnup_gui import (
     is_autostart_enabled,
     set_autostart_enabled,
     set_channel_leds,
+    set_media_play_pause,
     set_muted,
 )
 
@@ -32,6 +33,17 @@ class GetStreamIdsTests(unittest.TestCase):
 
         self.assertEqual(resolved["Firefox"], ["52"])
         self.assertEqual(resolved["Spotify"], ["67"])
+
+    def test_matches_spotify_aliases(self):
+        status = """Audio
+ ├─ Streams:
+ │    91. librespot                        [vol: 0.75]
+ ├─ Video
+"""
+
+        resolved = get_stream_ids({"Spotify"}, status)
+
+        self.assertEqual(resolved["Spotify"], ["91"])
 
     def test_keeps_direct_audio_targets(self):
         resolved = get_stream_ids({"Master Volume", "Line In / Capture"}, "")
@@ -62,6 +74,22 @@ class MuteControlTests(unittest.TestCase):
         self.assertEqual(error, "")
         run.assert_called_once_with(
             ["wpctl", "set-mute", "52", "0"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+
+    @patch("turnup_gui.subprocess.run")
+    def test_play_pause_media_sends_play_pause_to_playerctl(self, run):
+        run.return_value = Mock(returncode=0, stderr="")
+
+        success, error = set_media_play_pause()
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        run.assert_called_once_with(
+            ["playerctl", "play-pause"],
             capture_output=True,
             text=True,
             timeout=2,
@@ -99,6 +127,8 @@ class MuteControlTests(unittest.TestCase):
         self.assertEqual(rgb_to_hex(18, 52, 86), "#123456")
         self.assertEqual(normalize_button_action("none"), "none")
         self.assertEqual(normalize_button_action("mute"), "mute")
+        self.assertEqual(normalize_button_action("pause"), "play_pause")
+        self.assertEqual(normalize_button_action("play_pause"), "play_pause")
         self.assertEqual(normalize_button_action("unknown"), "mute")
 
 

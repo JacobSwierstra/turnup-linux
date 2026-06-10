@@ -33,7 +33,7 @@ BASE_LISTBOX_FONT_SIZE = 11
 
 KNOBS = [f"channel_{index}" for index in range(5)]
 DEFAULT_LED_COLOR = "#FFFFFF"
-BUTTON_ACTIONS = {"No action": "none", "Mute": "mute"}
+BUTTON_ACTIONS = {"No action": "none", "Mute": "mute", "Play/Pause media": "play_pause"}
 DEFAULT_BUTTON_ACTION = "mute"
 APP_TARGETS = {
     "Discord Voice": "WEBRTC VoiceEngine",
@@ -42,9 +42,20 @@ APP_TARGETS = {
     "Line In / Capture": "70",
     "Master Volume": "@DEFAULT_AUDIO_SINK@",
     "Microphone": "@DEFAULT_AUDIO_SOURCE@",
-    "Spotify": "Spotify",
+    "Spotify": (
+        "Spotify",
+        "Spotify Free",
+        "Spotify Premium",
+        "Spotify Web Player",
+        "librespot",
+        "spotifyd",
+        "com.spotify.client",
+        "com.spotify.Client",
+        "spotify.exe",
+    ),
     "Steam": "Steam",
 }
+
 
 
 def autostart_path(config_home=None):
@@ -113,6 +124,8 @@ def rgb_to_hex(red, green, blue):
 
 
 def normalize_button_action(value):
+    if value == "pause":
+        return "play_pause"
     return value if value in BUTTON_ACTIONS.values() else DEFAULT_BUTTON_ACTION
 
 
@@ -204,16 +217,33 @@ def get_audio_status():
     return result.stdout
 
 
+def target_search_terms(target):
+    real_target = APP_TARGETS.get(target, target)
+    if isinstance(real_target, (tuple, list)):
+        return [str(value).lower() for value in real_target if str(value).strip()]
+    return [str(real_target).lower()]
+
+
+def target_audio_value(target):
+    real_target = APP_TARGETS.get(target, target)
+    if isinstance(real_target, (tuple, list)):
+        return str(real_target[0]) if real_target else ""
+    return str(real_target)
+
+
 def get_stream_ids(targets, status):
     resolved = {target: [] for target in targets}
     searchable = {}
 
     for target in targets:
-        real_target = APP_TARGETS.get(target, target)
-        if real_target.startswith("@DEFAULT_AUDIO_") or real_target.isdigit():
+        real_target = target_audio_value(target)
+
+        if isinstance(real_target, str) and (
+            real_target.startswith("@DEFAULT_AUDIO_") or real_target.isdigit()
+        ):
             resolved[target] = [real_target]
         else:
-            searchable[target] = real_target.lower()
+            searchable[target] = target_search_terms(target)
 
     in_audio_streams = False
     for line in status.splitlines():
@@ -231,30 +261,82 @@ def get_stream_ids(targets, status):
             continue
         stream_id = id_match.group(1)
         lowered = stripped.lower()
-        for target, search_name in searchable.items():
-            if search_name in lowered:
+        for target, search_terms in searchable.items():
+            if any(search_name in lowered for search_name in search_terms):
                 resolved[target].append(stream_id)
+
+        if "Spotify" in resolved and not resolved["Spotify"]:
+            resolved["Spotify"] = get_spotify_pactl_fallback()
+            print("Spotify resolved:", resolved.get("Spotify"))
 
     return resolved
 
+def get_spotify_pactl_fallback():
+    result = subprocess.run(
+        ["pactl", "list", "short", "sink-inputs"],
+        capture_output=True,
+        text=True
+    )
+
+    for line in result.stdout.splitlines():
+        sink_id = line.split()[0]
+        return [f"pactl:{sink_id}"]
+
+    return []
+
+def get_pactl_sink_inputs(search_terms):
+    ids = []
+
+    result = subprocess.run(
+        ["pactl", "list", "short", "sink-inputs"],
+        capture_output=True,
+        text=True
+    )
+
+    for line in result.stdout.splitlines():
+        lower = line.lower()
+
+        if any(term.lower() in lower for term in search_terms):
+            sink_id = line.split()[0]
+            ids.append(f"pactl:{sink_id}")
+
+    return ids
 
 def set_volume(target, percent):
-    try:
+    if str(target).startswith("pactl:"):
+        sink_input = str(target).split(":", 1)[1]
         subprocess.run(
-            ["wpctl", "set-volume", target, f"{percent}%"],
+            ["pactl", "set-sink-input-volume", sink_input, f"{percent}%"],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-            check=False,
+            stderr=subprocess.DEVNULL
         )
-    except (OSError, subprocess.SubprocessError):
-        pass
+        return
+
+    subprocess.run(
+        ["wpctl", "set-volume", target, f"{percent}%"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
 
 def set_muted(target, muted):
     try:
         result = subprocess.run(
             ["wpctl", "set-mute", target, "1" if muted else "0"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, str(error)
+    return result.returncode == 0, result.stderr.strip()
+
+
+def set_media_play_pause():
+    try:
+        result = subprocess.run(
+            ["playerctl", "play-pause"],
             capture_output=True,
             text=True,
             timeout=2,
@@ -1209,6 +1291,14 @@ class TurnUpApp:
                             else:
                                 action = "mute" if muted else "unmute"
                                 self.set_status(f"Channel {channel + 1} {action} failed: {message}")
+                        elif button_action == "play_pause":
+                            success, message = set_media_play_pause()
+                            if success:
+                                self.set_status(f"Channel {channel + 1} toggled media play/pause")
+                            else:
+                                self.set_status(
+                                    f"Channel {channel + 1} play/pause failed: {message}"
+                                )
                         continue
 
                     percent = max(0, min(100, round((value / 1023) * 100)))

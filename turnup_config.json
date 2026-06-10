@@ -3,13 +3,32 @@
         "Discord Voice"
     ],
     "channel_1": [
-        "Helldivers 2"
+        "Helldivers 2",
+        "Steam"
     ],
     "channel_2": [
-        "Master Volume"
+        "Line In / Capture"
     ],
     "channel_3": [
-        "Firefox"
+        "Firefox",
+        "Spotify"
     ],
-    "channel_4": []
+    "channel_4": [],
+    "_program_names": {
+        "Line In / Capture": "Aux"
+    },
+    "_led_colors": {
+        "channel_0": "#4E63FF",
+        "channel_1": "#00FF37",
+        "channel_2": "#275C24",
+        "channel_3": "#DC00FF",
+        "channel_4": "#FF1D00"
+    },
+    "_button_actions": {
+        "channel_0": "mute",
+        "channel_1": "mute",
+        "channel_2": "mute",
+        "channel_3": "play_pause",
+        "channel_4": "mute"
+    }
 }
