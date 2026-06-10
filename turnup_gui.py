@@ -15,7 +15,10 @@ from tkinter import messagebox, ttk
 import serial
 
 
-CONFIG_FILE = Path(__file__).with_name("turnup_config.json")
+CONFIG_DIR = Path.home() / ".config" / "turnup-linux"
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+CONFIG_FILE = CONFIG_DIR / "turnup_config.json"
 PORT = "/dev/ttyACM0"
 BAUD = 115200
 VOLUME_STEP = 2
