@@ -29,49 +29,34 @@ This project is not affiliated with or endorsed by the TurnUp developers. It was
 
 ---
 
-## Install on Fedora (Recommended)
-
-Enable the COPR repository:
-
-```bash
+Installation
+Fedora / RHEL
 sudo dnf copr enable ezswees/turnup
-```
-
-Install Turn Up:
-
-```bash
 sudo dnf install turnup
-```
+Debian / Ubuntu / Linux Mint / Pop!_OS / Zorin
 
-Launch from the application menu or run:
+Download the latest .deb package from Releases and install:
 
-```bash
-turnup
-```
+sudo apt install ./turnup-*.deb
+Arch Linux
 
----
+Build and install using the included PKGBUILD:
 
-## Fedora RPM
+makepkg -si
+Other Linux Distributions
 
-The RPM installs the following files:
+Use the installer script:
 
-```text
-/usr/bin/turnup
-/usr/share/turnup/turnup_gui.py
-/usr/share/applications/turnup.desktop
-/usr/share/icons/hicolor/scalable/apps/turnup.svg
-```
+./install.sh
 
-DNF automatically installs the required runtime dependencies:
+Requirements:
 
-* Python 3
-* Tkinter
-* PySerial
-* Pillow
-* pystray
-* WirePlumber
-* PulseAudio utilities
-* Playerctl
+Python 3
+PipeWire / WirePlumber
+Tkinter
+PySerial
+Pillow
+pystray
 
 ---
 
