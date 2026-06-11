@@ -7,12 +7,16 @@ from turnup_gui import (
     build_autostart_entry,
     build_light_message,
     color_to_rgb,
+    discover_app_targets,
+    discover_desktop_apps,
+    discover_audio_streams,
     get_stream_ids,
     normalize_color,
     normalize_button_action,
     parse_packets,
     rgb_to_hex,
     is_autostart_enabled,
+    load_config,
     set_autostart_enabled,
     set_channel_leds,
     set_media_play_pause,
@@ -56,12 +60,84 @@ class GetStreamIdsTests(unittest.TestCase):
 
         events, remainder = parse_packets(packet)
 
-        self.assertEqual(
-            events,
-            [("knob", 2, 102)],
-        )
+        self.assertEqual(events, [("knob", 2, 102)])
         self.assertEqual(remainder, b"")
 
+    def test_discovers_current_audio_streams(self):
+        status = """Audio
+ ├─ Streams:
+ │    42. A Game                         [vol: 0.50]
+ ├─ Video
+"""
+
+        self.assertEqual(discover_audio_streams(status), {"A Game": ("A Game",)})
+
+    def test_combines_builtin_installed_and_running_apps(self):
+        status = """Audio
+ ├─ Streams:
+ │    42. Custom Player                  [vol: 0.50]
+ ├─ Video
+"""
+
+        targets = discover_app_targets(status=status, directories=[])
+
+        self.assertIn("Master Volume", targets)
+        self.assertEqual(targets["Custom Player"], ("Custom Player",))
+
+
+class DesktopDiscoveryTests(unittest.TestCase):
+    def test_keeps_audio_apps_and_filters_system_apps(self):
+        with TemporaryDirectory() as directory:
+            app_dir = Path(directory)
+            (app_dir / "browser.desktop").write_text(
+                """[Desktop Entry]
+Type=Application
+Name=Example Browser
+Exec=example-browser %U
+Categories=Network;WebBrowser;
+""",
+                encoding="utf-8",
+            )
+            (app_dir / "settings.desktop").write_text(
+                """[Desktop Entry]
+Type=Application
+Name=System Settings
+Exec=system-settings
+Categories=Settings;System;
+""",
+                encoding="utf-8",
+            )
+            (app_dir / "mixer.desktop").write_text(
+                """[Desktop Entry]
+Type=Application
+Name=Audio Mixer
+Exec=audio-mixer
+Categories=AudioVideo;Utility;
+""",
+                encoding="utf-8",
+            )
+
+            discovered = discover_desktop_apps([app_dir])
+
+        self.assertIn("Example Browser", discovered)
+        self.assertNotIn("System Settings", discovered)
+        self.assertNotIn("Audio Mixer", discovered)
+
+
+class ConfigTests(unittest.TestCase):
+    def test_keeps_saved_dynamic_app_mappings(self):
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "turnup_config.json"
+            config_path.write_text(
+                '{"channel_0": ["A Newly Discovered Game"], '
+                '"_program_names": {"A Newly Discovered Game": "My Game"}}',
+                encoding="utf-8",
+            )
+            with patch("turnup_gui.CONFIG_FILE", config_path):
+                config = load_config()
+
+        self.assertEqual(config["channel_0"], ["A Newly Discovered Game"])
+        self.assertEqual(config["_program_names"]["A Newly Discovered Game"], "My Game")
 
 class MuteControlTests(unittest.TestCase):
     @patch("turnup_gui.subprocess.run")
@@ -136,7 +212,10 @@ class AutostartTests(unittest.TestCase):
     def test_autostart_entry_quotes_python_and_script_paths(self):
         entry = build_autostart_entry("/opt/Python 3/python", "/home/user/Turn Up/app.py")
 
-        self.assertIn('Exec="/opt/Python 3/python" "/home/user/Turn Up/app.py"', entry)
+        self.assertIn(
+            'Exec="/opt/Python 3/python" "/home/user/Turn Up/app.py" --minimized',
+            entry,
+        )
         self.assertIn("Terminal=false", entry)
 
     def test_autostart_can_be_enabled_and_disabled(self):

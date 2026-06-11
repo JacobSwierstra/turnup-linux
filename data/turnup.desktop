@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Turn Up
+GenericName=Audio Controller
+Comment=Control application audio with the Turn Up hardware mixer
+Exec=turnup
+Icon=turnup
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=audio;volume;mixer;controller;
+StartupNotify=true

@@ -1,0 +1,4 @@
+/build/
+/turnup-*.rpm
+__pycache__/
+*.pyc

@@ -1,8 +1,10 @@
 import colorsys
+import configparser
 import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -38,7 +40,7 @@ KNOBS = [f"channel_{index}" for index in range(5)]
 DEFAULT_LED_COLOR = "#FFFFFF"
 BUTTON_ACTIONS = {"No action": "none", "Mute": "mute", "Play/Pause media": "play_pause"}
 DEFAULT_BUTTON_ACTION = "mute"
-APP_TARGETS = {
+BUILTIN_APP_TARGETS = {
     "Discord Voice": "WEBRTC VoiceEngine",
     "Firefox": "Firefox",
     "Helldivers 2": "Helldivers 2",
@@ -58,6 +60,54 @@ APP_TARGETS = {
     ),
     "Steam": "Steam",
 }
+APP_TARGETS = dict(BUILTIN_APP_TARGETS)
+
+DESKTOP_INCLUDE_CATEGORIES = {
+    "Audio",
+    "AudioVideo",
+    "Game",
+    "Player",
+    "Recorder",
+    "Telephony",
+    "Video",
+    "WebBrowser",
+}
+DESKTOP_EXCLUDE_CATEGORIES = {
+    "Core",
+    "DesktopSettings",
+    "Filesystem",
+    "PackageManager",
+    "Settings",
+    "System",
+    "Utility",
+}
+AUDIO_APP_KEYWORDS = {
+    "browser",
+    "chrome",
+    "chromium",
+    "discord",
+    "firefox",
+    "game",
+    "media",
+    "music",
+    "player",
+    "signal",
+    "slack",
+    "spotify",
+    "steam",
+    "teams",
+    "video",
+    "vlc",
+    "voice",
+    "zoom",
+}
+IGNORED_STREAM_NAMES = {
+    "audio stream",
+    "dummy output",
+    "pipewire",
+    "wireplumber",
+}
+IGNORED_DESKTOP_APP_NAMES = {"Turn Up", "Turn Up Linux"}
 
 
 
@@ -75,7 +125,10 @@ def desktop_exec_argument(value):
 def build_autostart_entry(python_executable=None, script_path=None):
     python_executable = Path(python_executable or sys.executable).resolve()
     script_path = Path(script_path or __file__).resolve()
-    command = f"{desktop_exec_argument(python_executable)} {desktop_exec_argument(script_path)}"
+    command = (
+        f"{desktop_exec_argument(python_executable)} "
+        f"{desktop_exec_argument(script_path)} --minimized"
+    )
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -143,14 +196,16 @@ def load_config():
     for knob in KNOBS:
         values = saved.get(knob, [])
         if isinstance(values, list):
-            config[knob] = [value for value in values if value in APP_TARGETS]
+            config[knob] = [
+                value for value in values if isinstance(value, str) and value.strip()
+            ]
 
     names = saved.get("_program_names", {})
     if isinstance(names, dict):
         config["_program_names"] = {
             key: value.strip()
             for key, value in names.items()
-            if key in APP_TARGETS and isinstance(value, str) and value.strip()
+            if isinstance(key, str) and isinstance(value, str) and value.strip()
         }
 
     colors = saved.get("_led_colors", {})
@@ -175,6 +230,124 @@ def write_config(config):
         json.dump(config, config_file, indent=4)
         config_file.write("\n")
     temporary_file.replace(CONFIG_FILE)
+
+
+def desktop_application_dirs(data_home=None, data_dirs=None):
+    home = Path(data_home or os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    shared = data_dirs or os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
+    directories = [home / "applications"]
+    directories.extend(Path(path) / "applications" for path in shared.split(":") if path)
+    directories.extend(
+        (
+            Path.home() / ".local/share/flatpak/exports/share/applications",
+            Path("/var/lib/flatpak/exports/share/applications"),
+        )
+    )
+    return list(dict.fromkeys(directories))
+
+
+def _desktop_bool(section, key):
+    return section.get(key, "false").strip().lower() == "true"
+
+
+def _desktop_search_terms(section):
+    values = [section.get("Name", ""), section.get("StartupWMClass", "")]
+    command = section.get("Exec", "")
+    try:
+        command_parts = shlex.split(command)
+    except ValueError:
+        command_parts = command.split()
+    executable = next(
+        (
+            part
+            for part in command_parts
+            if not part.startswith(("%", "-")) and "=" not in part
+        ),
+        "",
+    )
+    if executable:
+        values.append(Path(executable).name)
+    values.extend((section.get("X-Flatpak", ""), section.get("Icon", "")))
+    return tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+def is_audio_desktop_app(section):
+    if (
+        section.get("Type", "Application") != "Application"
+        or section.get("Name", "").strip() in IGNORED_DESKTOP_APP_NAMES
+        or _desktop_bool(section, "Hidden")
+        or _desktop_bool(section, "NoDisplay")
+        or _desktop_bool(section, "Terminal")
+    ):
+        return False
+
+    categories = {value for value in section.get("Categories", "").split(";") if value}
+    searchable = " ".join(
+        (
+            section.get("Name", ""),
+            section.get("GenericName", ""),
+            section.get("Comment", ""),
+            section.get("Exec", ""),
+            section.get("Keywords", ""),
+        )
+    ).lower()
+    keyword_match = any(keyword in searchable for keyword in AUDIO_APP_KEYWORDS)
+    if categories & DESKTOP_EXCLUDE_CATEGORIES:
+        return False
+    return bool(categories & DESKTOP_INCLUDE_CATEGORIES) or keyword_match
+
+
+def discover_desktop_apps(directories=None):
+    discovered = {}
+    for directory in desktop_application_dirs() if directories is None else directories:
+        if not directory.is_dir():
+            continue
+        for desktop_file in directory.glob("*.desktop"):
+            parser = configparser.ConfigParser(interpolation=None, strict=False)
+            try:
+                parser.read(desktop_file, encoding="utf-8")
+                section = parser["Desktop Entry"]
+            except (OSError, UnicodeError, KeyError, configparser.Error):
+                continue
+            name = section.get("Name", "").strip()
+            if not name or not is_audio_desktop_app(section):
+                continue
+            terms = _desktop_search_terms(section)
+            if terms:
+                discovered.setdefault(name, terms)
+    return discovered
+
+
+def discover_audio_streams(status):
+    discovered = {}
+    in_audio_streams = False
+    for line in status.splitlines():
+        stripped = line.strip()
+        if "Streams:" in stripped:
+            in_audio_streams = True
+            continue
+        if in_audio_streams and stripped.startswith(("Video", "Settings")):
+            break
+        if not in_audio_streams:
+            continue
+        match = re.match(r"^[^0-9]*\d+\.\s+(.+?)(?:\s+\[.*)?$", stripped)
+        if match is None:
+            continue
+        name = match.group(1).strip()
+        if name and name.lower() not in IGNORED_STREAM_NAMES:
+            discovered.setdefault(name, (name,))
+    return discovered
+
+
+def discover_app_targets(status=None, directories=None):
+    targets = dict(BUILTIN_APP_TARGETS)
+    for name, terms in discover_desktop_apps(directories).items():
+        targets.setdefault(name, terms)
+    for name, terms in discover_audio_streams(
+        get_audio_status() if status is None else status
+    ).items():
+        targets.setdefault(name, terms)
+    return targets
 
 
 def parse_packets(buffer):
@@ -268,9 +441,8 @@ def get_stream_ids(targets, status):
             if any(search_name in lowered for search_name in search_terms):
                 resolved[target].append(stream_id)
 
-        if "Spotify" in resolved and not resolved["Spotify"]:
-            resolved["Spotify"] = get_spotify_pactl_fallback()
-            print("Spotify resolved:", resolved.get("Spotify"))
+    if "Spotify" in resolved and not resolved["Spotify"]:
+        resolved["Spotify"] = get_spotify_pactl_fallback()
 
     return resolved
 
@@ -523,7 +695,7 @@ class ColorWheelDialog:
 
 
 class TurnUpApp:
-    def __init__(self, root):
+    def __init__(self, root, start_minimized=False):
         self.root = root
         self.config = load_config()
         self.config_lock = threading.Lock()
@@ -549,11 +721,16 @@ class TurnUpApp:
         self.status_var = tk.StringVar(value="Starting controller...")
         self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
         self.ordered_apps = []
+        self.tray_icon = None
+        self.exiting = False
 
         self._configure_window()
         self._build_ui()
         self.refresh_apps(show_status=False)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        tray_ready = self._ensure_tray_icon() if self.autostart_var.get() else False
+        if start_minimized and tray_ready:
+            self.root.withdraw()
         self.root.after(350, self.start_controller)
 
     def _configure_window(self):
@@ -620,9 +797,10 @@ class TurnUpApp:
         menu_button = ttk.Menubutton(title_row, text="Settings", style="Secondary.TButton")
         settings_menu = tk.Menu(menu_button, tearoff=False)
         settings_menu.add_command(label="Restart Controller", command=self.restart_controller)
+        settings_menu.add_command(label="Refresh App List", command=self.refresh_apps)
         settings_menu.add_separator()
         settings_menu.add_checkbutton(
-            label="Start with Linux",
+            label="Start with Linux minimized to tray",
             variable=self.autostart_var,
             command=self.toggle_autostart,
         )
@@ -910,14 +1088,69 @@ class TurnUpApp:
     def toggle_autostart(self):
         enabled = self.autostart_var.get()
         try:
+            if enabled and not self._ensure_tray_icon():
+                self.autostart_var.set(False)
+                return
             set_autostart_enabled(enabled)
         except OSError as error:
             self.autostart_var.set(is_autostart_enabled())
             messagebox.showerror("Startup setting failed", str(error), parent=self.root)
             self.status_var.set("Could not update startup setting")
             return
+        if not enabled:
+            self._stop_tray_icon()
         state = "enabled" if enabled else "disabled"
         self.status_var.set(f"Start with Linux {state}")
+
+    def _ensure_tray_icon(self):
+        if self.tray_icon is not None:
+            return True
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except ImportError:
+            messagebox.showerror(
+                "System tray support unavailable",
+                "Install the pystray and Pillow Python packages to enable minimized startup.",
+                parent=self.root,
+            )
+            self.root.deiconify()
+            return False
+
+        image = Image.new("RGB", (64, 64), "#111827")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((8, 8, 56, 56), radius=10, fill="#2563eb")
+        draw.rectangle((18, 30, 24, 46), fill="white")
+        draw.rectangle((29, 22, 35, 46), fill="white")
+        draw.rectangle((40, 14, 46, 46), fill="white")
+        self.tray_icon = pystray.Icon(
+            "turnup-linux",
+            image,
+            "Turn Up",
+            pystray.Menu(
+                pystray.MenuItem("Show Turn Up", self._tray_show, default=True),
+                pystray.MenuItem("Quit", self._tray_quit),
+            ),
+        )
+        self.tray_icon.run_detached()
+        return True
+
+    def _tray_show(self, _icon=None, _item=None):
+        self.root.after(0, self.show_window)
+
+    def _tray_quit(self, _icon=None, _item=None):
+        self.root.after(0, self.exit_app)
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _stop_tray_icon(self):
+        icon = self.tray_icon
+        self.tray_icon = None
+        if icon is not None:
+            icon.stop()
 
     def mapping_changed(self, knob):
         self.active_listbox = self.listboxes[knob]
@@ -1101,6 +1334,11 @@ class TurnUpApp:
         selected_by_knob = {
             knob: self._selected_apps(listbox) for knob, listbox in self.listboxes.items()
         }
+        APP_TARGETS.clear()
+        APP_TARGETS.update(discover_app_targets())
+        for saved_apps in self.config_snapshot().values():
+            for app_name in saved_apps:
+                APP_TARGETS.setdefault(app_name, app_name)
         self.ordered_apps = sorted(APP_TARGETS, key=lambda app: self.display_name(app).lower())
 
         for knob, listbox in self.listboxes.items():
@@ -1112,7 +1350,7 @@ class TurnUpApp:
                     listbox.selection_set(index)
 
         if show_status:
-            self.status_var.set("Program list refreshed")
+            self.status_var.set(f"Found {len(self.ordered_apps)} audio-capable programs")
 
     def _selected_apps(self, listbox):
         return {
@@ -1375,17 +1613,29 @@ class TurnUpApp:
         return True, ""
 
     def close(self):
+        if self.autostart_var.get() and self._ensure_tray_icon():
+            self.save_config()
+            self.root.withdraw()
+            self.status_var.set("Turn Up is running in the system tray")
+            return
+        self.exit_app()
+
+    def exit_app(self):
+        if self.exiting:
+            return
+        self.exiting = True
         self.save_config()
         self.stop_event.set()
         if self.initialization_watchdog is not None:
             self.root.after_cancel(self.initialization_watchdog)
             self.initialization_watchdog = None
+        self._stop_tray_icon()
         self.root.destroy()
 
 
 def main():
     root = tk.Tk()
-    TurnUpApp(root)
+    TurnUpApp(root, start_minimized="--minimized" in sys.argv[1:])
     root.mainloop()
 
 
