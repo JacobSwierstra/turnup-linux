@@ -12,6 +12,7 @@ rm -rf "$source_dir"
 mkdir -p "$topdir/BUILD" "$topdir/BUILDROOT" "$topdir/RPMS" "$topdir/SOURCES" "$topdir/SPECS" "$topdir/SRPMS"
 mkdir -p "$source_dir/bin" "$source_dir/data"
 
+install -pm 0755 "$project_root/install.sh" "$source_dir/install.sh"
 install -pm 0644 "$project_root/turnup_gui.py" "$source_dir/turnup_gui.py"
 install -pm 0755 "$project_root/bin/turnup" "$source_dir/bin/turnup"
 install -pm 0644 "$project_root/data/turnup.desktop" "$source_dir/data/turnup.desktop"
@@ -24,6 +25,9 @@ rpmbuild -ba --define "_topdir $topdir" "$topdir/SPECS/turnup.spec"
 
 for rpm in "$topdir"/RPMS/*/"$name"-"$version"-*.rpm; do
     install -pm 0644 "$rpm" "$project_root/$(basename "$rpm")"
+done
+for srpm in "$topdir"/SRPMS/"$name"-"$version"-*.src.rpm; do
+    install -pm 0644 "$srpm" "$project_root/$(basename "$srpm")"
 done
 
 printf '\nBuilt packages:\n'

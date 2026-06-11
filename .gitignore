@@ -1,4 +1,6 @@
 /build/
 /turnup-*.rpm
+/turnup_*.deb
+/turnup-*.pkg.tar.*
 __pycache__/
 *.pyc

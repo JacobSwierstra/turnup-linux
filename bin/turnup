@@ -1,3 +1,4 @@
 #!/bin/sh
 
-exec /usr/bin/python3 /usr/share/turnup/turnup_gui.py "$@"
+prefix=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec /usr/bin/python3 "$prefix/share/turnup/turnup_gui.py" "$@"

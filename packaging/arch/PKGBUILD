@@ -1,0 +1,24 @@
+pkgname=turnup
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Hardware controller for Linux application audio"
+arch=('any')
+url="https://github.com/JacobSwierstra/turnup-linux"
+license=('custom')
+depends=(
+  'python'
+  'tk'
+  'python-pyserial'
+  'python-pillow'
+  'python-pystray'
+  'wireplumber'
+  'playerctl'
+  'libpulse'
+)
+source=("${pkgname}-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  DESTDIR="${pkgdir}" PREFIX=/usr ./install.sh
+}

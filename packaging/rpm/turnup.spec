@@ -1,6 +1,6 @@
 Name:           turnup
 Version:        1.0.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Hardware controller for Linux application audio
 
 License:        LicenseRef-Proprietary
@@ -30,16 +30,7 @@ the controller LEDs.
 # The application is interpreted Python and does not require compilation.
 
 %install
-mkdir -p %{buildroot}%{_bindir}
-mkdir -p %{buildroot}%{_datadir}/turnup
-mkdir -p %{buildroot}%{_datadir}/applications
-mkdir -p %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
-
-install -Dpm 0755 bin/turnup %{buildroot}%{_bindir}/turnup
-install -Dpm 0644 turnup_gui.py %{buildroot}%{_datadir}/turnup/turnup_gui.py
-install -Dpm 0644 data/turnup.desktop %{buildroot}%{_datadir}/applications/turnup.desktop
-install -Dpm 0644 data/turnup.svg \
-    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/turnup.svg
+DESTDIR=%{buildroot} PREFIX=%{_prefix} ./install.sh
 
 %files
 %{_bindir}/turnup
@@ -48,5 +39,8 @@ install -Dpm 0644 data/turnup.svg \
 %{_datadir}/icons/hicolor/scalable/apps/turnup.svg
 
 %changelog
+* Thu Jun 11 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.0.0-2
+- Add shared installer and cross-distribution packaging support
+
 * Thu Jun 11 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.0.0-1
 - Initial local Fedora RPM package

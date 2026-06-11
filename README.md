@@ -17,7 +17,7 @@ This project is not affiliated with or endorsed by the TurnUp developers. It was
 
 ---
 
-## Requirements
+## Supported distributions
 
 * Python 3
 * Tkinter
@@ -62,7 +62,7 @@ pystray
 
 ## Build Locally
 
-Install the RPM build tools:
+## Start on login
 
 ```bash
 sudo dnf install rpm-build
