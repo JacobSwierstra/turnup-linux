@@ -1,4 +1,3 @@
-````md
 # Turn Up Linux
 
 Unofficial Linux support for the TurnUp USB Mixer.
@@ -296,6 +295,3 @@ Please include:
 # License
 
 See the repository license file for details.
-
-```
-```
