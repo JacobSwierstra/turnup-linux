@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from turnup_gui import (
+    actionable_controller_events,
     build_autostart_entry,
     build_light_message,
     check_for_release_update,
@@ -67,6 +68,15 @@ class GetStreamIdsTests(unittest.TestCase):
 
         self.assertEqual(events, [("knob", 2, 102)])
         self.assertEqual(remainder, b"")
+
+    def test_startup_sync_ignores_buffered_button_packets(self):
+        events = [("button", 2, None), ("knob", 2, 512)]
+
+        self.assertEqual(
+            actionable_controller_events(events, syncing=True),
+            [("knob", 2, 512)],
+        )
+        self.assertEqual(actionable_controller_events(events, syncing=False), events)
 
     def test_discovers_current_audio_streams(self):
         status = """Audio

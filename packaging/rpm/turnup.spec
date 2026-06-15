@@ -1,5 +1,5 @@
 Name:           turnup
-Version:        1.1.0
+Version:        1.1.1
 Release:        1%{?dist}
 Summary:        Hardware controller for Linux application audio
 
@@ -41,6 +41,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} ./install.sh
 %{_datadir}/icons/hicolor/scalable/apps/turnup.svg
 
 %changelog
+* Mon Jun 15 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.1.1-1
+- Ignore buffered controller button packets during startup synchronization
+
 * Mon Jun 15 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.1.0-1
 - Add release-based in-app updates and native system tray support
 - Sync newly launched application streams to current controller positions

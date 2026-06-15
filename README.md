@@ -81,7 +81,7 @@ The build uses `build/rpmbuild/` as its private RPM build tree and copies the fi
 ## Install Local RPM
 
 ```bash
-sudo dnf install ./turnup-1.1.0-1.fc44.noarch.rpm
+sudo dnf install ./turnup-1.1.1-1.fc44.noarch.rpm
 ```
 
 Launch Turn Up from the desktop application menu or run:

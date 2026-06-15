@@ -26,7 +26,7 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = CONFIG_DIR / "turnup_config.json"
 PROJECT_ROOT = Path(__file__).resolve().parent
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 LATEST_RELEASE_URL = "https://api.github.com/repos/JacobSwierstra/turnup-linux/releases/latest"
 PORT = "/dev/ttyACM0"
 BAUD = 115200
@@ -609,6 +609,12 @@ def parse_packets(buffer):
         position += packet_length
 
     return events, buffer[position:]
+
+
+def actionable_controller_events(events, syncing):
+    if not syncing:
+        return events
+    return [event for event in events if event[0] != "button"]
 
 
 def get_audio_status():
@@ -1911,7 +1917,9 @@ class TurnUpApp:
                     buffer = buffer[-5:]
 
                 updates = {}
-                for event_type, channel, value in events:
+                for event_type, channel, value in actionable_controller_events(
+                    events, syncing
+                ):
                     knob = f"channel_{channel}"
                     if knob not in KNOBS:
                         continue
