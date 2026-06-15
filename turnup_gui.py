@@ -5,10 +5,14 @@ import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 import tkinter as tk
 from tkinter import font as tkfont
@@ -21,11 +25,15 @@ CONFIG_DIR = Path.home() / ".config" / "turnup-linux"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = CONFIG_DIR / "turnup_config.json"
+PROJECT_ROOT = Path(__file__).resolve().parent
+APP_VERSION = "1.1.0"
+LATEST_RELEASE_URL = "https://api.github.com/repos/JacobSwierstra/turnup-linux/releases/latest"
 PORT = "/dev/ttyACM0"
 BAUD = 115200
 VOLUME_STEP = 2
 BUTTON_DEBOUNCE_SECONDS = 0.2
 LED_REFRESH_SECONDS = 0.1
+APP_CONTROL_REFRESH_SECONDS = 0.25
 INITIALIZATION_TIMEOUT_SECONDS = 2.5
 INITIALIZATION_WATCHDOG_MS = 6000
 CONTROLLER_PREVIEW_HEIGHT = 150
@@ -110,6 +118,221 @@ IGNORED_STREAM_NAMES = {
 IGNORED_DESKTOP_APP_NAMES = {"Turn Up", "Turn Up Linux"}
 
 
+class AppIndicatorTrayIcon:
+    def __init__(self, root, show_callback, quit_callback):
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        try:
+            gi.require_version("AppIndicator3", "0.1")
+            from gi.repository import AppIndicator3 as IndicatorModule
+        except ValueError:
+            gi.require_version("AyatanaAppIndicator3", "0.1")
+            from gi.repository import AyatanaAppIndicator3 as IndicatorModule
+        from gi.repository import GLib, Gtk
+
+        initialized = Gtk.init_check()
+        if isinstance(initialized, tuple):
+            initialized = initialized[0]
+        if not initialized:
+            raise RuntimeError("GTK could not connect to the desktop session.")
+
+        icon_path = tray_icon_path()
+        icon_name = str(icon_path) if icon_path is not None else "audio-volume-high"
+        self._loop = GLib.MainLoop()
+        self._indicator_module = IndicatorModule
+        self._indicator = IndicatorModule.Indicator.new(
+            "turnup-linux", icon_name, IndicatorModule.IndicatorCategory.APPLICATION_STATUS
+        )
+        self._indicator.set_title("Turn Up")
+        self._indicator.set_status(IndicatorModule.IndicatorStatus.ACTIVE)
+
+        menu = Gtk.Menu()
+        show_item = Gtk.MenuItem(label="Show Turn Up")
+        show_item.connect("activate", lambda *_args: root.after(0, show_callback))
+        menu.append(show_item)
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", lambda *_args: root.after(0, quit_callback))
+        menu.append(quit_item)
+        menu.show_all()
+        self._indicator.set_menu(menu)
+        self._menu = menu
+        self._thread = threading.Thread(target=self._loop.run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._indicator.set_status(self._indicator_module.IndicatorStatus.PASSIVE)
+        self._loop.quit()
+
+
+def tray_icon_path():
+    candidates = (
+        PROJECT_ROOT / "data" / "turnup.svg",
+        Path("/usr/share/icons/hicolor/scalable/apps/turnup.svg"),
+        Path("/usr/local/share/icons/hicolor/scalable/apps/turnup.svg"),
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def run_git(project_root, *arguments):
+    try:
+        return subprocess.run(
+            ["git", "-C", str(project_root), *arguments],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, str(error)
+
+
+def normalized_version(value):
+    return str(value).strip().lower().lstrip("v")
+
+
+def fetch_latest_release(url=LATEST_RELEASE_URL):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"turnup-linux/{APP_VERSION}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            release = json.load(response)
+    except (OSError, urllib.error.URLError, ValueError) as error:
+        return None, str(error)
+
+    tag = str(release.get("tag_name", "")).strip()
+    if not tag:
+        return None, "GitHub's latest release does not have a version tag."
+    assets = [
+        {
+            "name": str(asset.get("name", "")),
+            "url": str(asset.get("browser_download_url", "")),
+        }
+        for asset in release.get("assets", [])
+        if asset.get("name") and asset.get("browser_download_url")
+    ]
+    return {"tag": tag, "url": release.get("html_url", ""), "assets": assets}, ""
+
+
+def check_for_release_update(current_version=APP_VERSION):
+    release, error = fetch_latest_release()
+    if release is None:
+        return {"status": "error", "message": error}
+    if normalized_version(release["tag"]) == normalized_version(current_version):
+        return {"status": "current", "version": current_version, "release": release}
+    return {
+        "status": "update_available",
+        "current_version": current_version,
+        "release": release,
+    }
+
+
+def package_update_asset(release):
+    assets = release.get("assets", [])
+    if shutil.which("dnf"):
+        suffixes = (".rpm",)
+        command = lambda path: ["pkexec", "dnf", "install", "-y", path]
+    elif shutil.which("apt"):
+        suffixes = (".deb",)
+        command = lambda path: ["pkexec", "apt", "install", "-y", path]
+    elif shutil.which("pacman"):
+        suffixes = (".pkg.tar.zst", ".pkg.tar.xz")
+        command = lambda path: ["pkexec", "pacman", "-U", "--noconfirm", path]
+    else:
+        return None, None
+
+    for asset in assets:
+        lowered_name = asset["name"].lower()
+        if lowered_name.endswith(".src.rpm"):
+            continue
+        if lowered_name.endswith(suffixes):
+            return asset, command
+    return None, command
+
+
+def download_release_asset(asset):
+    filename = Path(asset["name"]).name
+    suffix = "".join(Path(filename).suffixes)
+    temporary = tempfile.NamedTemporaryFile(
+        prefix="turnup-update-", suffix=suffix, delete=False
+    )
+    destination = Path(temporary.name)
+    temporary.close()
+    request = urllib.request.Request(
+        asset["url"], headers={"User-Agent": f"turnup-linux/{APP_VERSION}"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            with destination.open("wb") as output:
+                shutil.copyfileobj(response, output)
+    except (OSError, urllib.error.URLError) as error:
+        destination.unlink(missing_ok=True)
+        return None, str(error)
+    return destination, ""
+
+
+def install_package_release(release):
+    asset, command_builder = package_update_asset(release)
+    if command_builder is None:
+        return False, "No supported package manager was found."
+    if asset is None:
+        return False, "This GitHub Release has no package for this Linux distribution."
+    if shutil.which("pkexec") is None:
+        return False, "pkexec is required to authorize the package installation."
+
+    package_path, error = download_release_asset(asset)
+    if package_path is None:
+        return False, error
+    try:
+        result = subprocess.run(
+            command_builder(str(package_path)), capture_output=True, text=True, check=False
+        )
+    except OSError as error:
+        return False, str(error)
+    finally:
+        package_path.unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        return False, result.stderr.strip() or result.stdout.strip() or "Package update failed."
+    return True, result.stdout.strip()
+
+
+def install_release_update(release, project_root=PROJECT_ROOT):
+    if not (Path(project_root) / ".git").exists():
+        return install_package_release(release)
+
+    dirty = run_git(project_root, "status", "--porcelain")
+    if isinstance(dirty, tuple):
+        return False, dirty[1]
+    if dirty.returncode != 0:
+        return False, dirty.stderr.strip() or "Could not inspect local changes."
+    if dirty.stdout.strip():
+        return False, "Local changes must be committed or removed before updating."
+
+    tag = release["tag"]
+    fetch = run_git(project_root, "fetch", "--quiet", "--tags", "origin")
+    if isinstance(fetch, tuple):
+        return False, fetch[1]
+    if fetch.returncode != 0:
+        return False, fetch.stderr.strip() or "Could not fetch release tags."
+
+    release_commit = run_git(project_root, "rev-parse", f"refs/tags/{tag}^{{commit}}")
+    if isinstance(release_commit, tuple) or release_commit.returncode != 0:
+        return False, f"Release tag {tag} was not found in the Git repository."
+
+    result = run_git(project_root, "merge", "--ff-only", release_commit.stdout.strip())
+    if isinstance(result, tuple):
+        return False, result[1]
+    if result.returncode != 0:
+        return False, result.stderr.strip() or result.stdout.strip() or "Release update failed."
+    return True, result.stdout.strip()
+
+
 
 def autostart_path(config_home=None):
     base = Path(config_home) if config_home else Path(
@@ -161,6 +384,7 @@ def default_config():
         "_program_names": {},
         "_led_colors": {knob: DEFAULT_LED_COLOR for knob in KNOBS},
         "_button_actions": {knob: DEFAULT_BUTTON_ACTION for knob in KNOBS},
+        "_controller_positions": {},
     }
 
 
@@ -220,6 +444,14 @@ def load_config():
         config["_button_actions"] = {
             knob: normalize_button_action(actions.get(knob, DEFAULT_BUTTON_ACTION))
             for knob in KNOBS
+        }
+
+    positions = saved.get("_controller_positions", {})
+    if isinstance(positions, dict):
+        config["_controller_positions"] = {
+            knob: max(0, min(100, round(value)))
+            for knob, value in positions.items()
+            if knob in KNOBS and isinstance(value, (int, float))
         }
     return config
 
@@ -446,6 +678,30 @@ def get_stream_ids(targets, status):
 
     return resolved
 
+
+def get_new_stream_volume_updates(config, last_percent, known_stream_ids, status):
+    targets = {
+        app_name
+        for knob in KNOBS
+        for app_name in config.get(knob, [])
+    }
+    resolved = get_stream_ids(targets, status)
+    current_stream_ids = {
+        app_name: set(stream_ids) for app_name, stream_ids in resolved.items()
+    }
+    updates = []
+
+    for knob in KNOBS:
+        percent = last_percent.get(knob)
+        if percent is None:
+            continue
+        for app_name in config.get(knob, []):
+            previous_ids = known_stream_ids.get(app_name, set())
+            for stream_id in current_stream_ids.get(app_name, set()) - previous_ids:
+                updates.append((stream_id, percent))
+
+    return current_stream_ids, updates
+
 def get_spotify_pactl_fallback():
     result = subprocess.run(
         ["pactl", "list", "short", "sink-inputs"],
@@ -495,9 +751,15 @@ def set_volume(target, percent):
 
 
 def set_muted(target, muted):
+    if str(target).startswith("pactl:"):
+        sink_input = str(target).split(":", 1)[1]
+        command = ["pactl", "set-sink-input-mute", sink_input, "1" if muted else "0"]
+    else:
+        command = ["wpctl", "set-mute", target, "1" if muted else "0"]
+
     try:
         result = subprocess.run(
-            ["wpctl", "set-mute", target, "1" if muted else "0"],
+            command,
             capture_output=True,
             text=True,
             timeout=2,
@@ -510,8 +772,18 @@ def set_muted(target, muted):
 
 def set_media_play_pause():
     try:
+        daemon = subprocess.run(
+            ["playerctld", "daemon"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if daemon.returncode != 0:
+            return False, daemon.stderr.strip() or "Could not start playerctld."
+
         result = subprocess.run(
-            ["playerctl", "play-pause"],
+            ["playerctl", "--player=playerctld", "play-pause"],
             capture_output=True,
             text=True,
             timeout=2,
@@ -701,7 +973,7 @@ class TurnUpApp:
         self.config_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.controller_thread = None
-        self.last_percent = {}
+        self.last_percent = dict(self.config["_controller_positions"])
         self.last_button_press = {}
         self.channel_muted = {knob: False for knob in KNOBS}
         self.listboxes = {}
@@ -723,12 +995,13 @@ class TurnUpApp:
         self.ordered_apps = []
         self.tray_icon = None
         self.exiting = False
+        self.update_in_progress = False
 
         self._configure_window()
         self._build_ui()
         self.refresh_apps(show_status=False)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        tray_ready = self._ensure_tray_icon() if self.autostart_var.get() else False
+        tray_ready = self._ensure_tray_icon()
         if start_minimized and tray_ready:
             self.root.withdraw()
         self.root.after(350, self.start_controller)
@@ -798,6 +1071,7 @@ class TurnUpApp:
         settings_menu = tk.Menu(menu_button, tearoff=False)
         settings_menu.add_command(label="Restart Controller", command=self.restart_controller)
         settings_menu.add_command(label="Refresh App List", command=self.refresh_apps)
+        settings_menu.add_command(label="Check for Updates", command=self.check_for_updates)
         settings_menu.add_separator()
         settings_menu.add_checkbutton(
             label="Start with Linux minimized to tray",
@@ -1097,21 +1371,102 @@ class TurnUpApp:
             messagebox.showerror("Startup setting failed", str(error), parent=self.root)
             self.status_var.set("Could not update startup setting")
             return
-        if not enabled:
-            self._stop_tray_icon()
         state = "enabled" if enabled else "disabled"
         self.status_var.set(f"Start with Linux {state}")
+
+    def check_for_updates(self):
+        if self.update_in_progress:
+            return
+        self.update_in_progress = True
+        self.status_var.set("Checking GitHub for updates...")
+        threading.Thread(target=self._check_for_updates_worker, daemon=True).start()
+
+    def _check_for_updates_worker(self):
+        result = check_for_release_update()
+        self.root.after(0, self._handle_update_check, result)
+
+    def _handle_update_check(self, result):
+        self.update_in_progress = False
+        status = result["status"]
+
+        if status == "current":
+            self.status_var.set("Turn Up is up to date")
+            messagebox.showinfo(
+                "No updates available",
+                f"Turn Up {APP_VERSION} matches the latest published GitHub Release.",
+                parent=self.root,
+            )
+            return
+
+        if status == "error":
+            self.status_var.set("Update check failed")
+            messagebox.showerror("Update check failed", result["message"], parent=self.root)
+            return
+
+        release = result["release"]
+        should_update = messagebox.askyesno(
+            "Update available",
+            f"A new GitHub Release is available ({APP_VERSION} -> {release['tag']}).\n\n"
+            "Download and install it now?",
+            parent=self.root,
+        )
+        if not should_update:
+            self.status_var.set("Update available")
+            return
+
+        self.update_in_progress = True
+        self.status_var.set("Downloading and installing update...")
+        threading.Thread(
+            target=self._install_update_worker, args=(release,), daemon=True
+        ).start()
+
+    def _install_update_worker(self, release):
+        success, message = install_release_update(release)
+        self.root.after(0, self._handle_update_install, success, message)
+
+    def _handle_update_install(self, success, message):
+        self.update_in_progress = False
+        if not success:
+            self.status_var.set("Update installation failed")
+            messagebox.showerror("Update failed", message, parent=self.root)
+            return
+
+        self.status_var.set("Update installed")
+        if messagebox.askyesno(
+            "Update installed",
+            "The update was installed successfully. Restart Turn Up now?",
+            parent=self.root,
+        ):
+            self.restart_application()
+
+    def restart_application(self):
+        self.save_config()
+        self.stop_event.set()
+        self._stop_tray_icon()
+        self.root.destroy()
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
 
     def _ensure_tray_icon(self):
         if self.tray_icon is not None:
             return True
+
+        if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+            try:
+                self.tray_icon = AppIndicatorTrayIcon(
+                    self.root, self.show_window, self.exit_app
+                )
+                return True
+            except Exception:
+                self.tray_icon = None
+
         try:
             import pystray
             from PIL import Image, ImageDraw
-        except ImportError:
+        except Exception as error:
             messagebox.showerror(
                 "System tray support unavailable",
-                "Install the pystray and Pillow Python packages to enable minimized startup.",
+                "Turn Up could not create a system tray icon. Install GTK AppIndicator "
+                f"or pystray support for your desktop.\n\n{error}",
                 parent=self.root,
             )
             self.root.deiconify()
@@ -1412,6 +1767,7 @@ class TurnUpApp:
     def save_config(self, status_message="Settings saved"):
         for knob, listbox in self.listboxes.items():
             self.config[knob] = sorted(self._selected_apps(listbox), key=str.lower)
+        self.config["_controller_positions"] = self.last_percent.copy()
 
         try:
             write_config(self.config)
@@ -1472,6 +1828,38 @@ class TurnUpApp:
         self.last_button_press.clear()
         self.start_controller()
 
+    def handle_button_press(self, knob, channel, controller, now=None):
+        with self.config_lock:
+            button_action = self.config["_button_actions"][knob]
+        if button_action == "none":
+            return
+
+        now = time.monotonic() if now is None else now
+        if now - self.last_button_press.get(knob, 0) < BUTTON_DEBOUNCE_SECONDS:
+            return
+        self.last_button_press[knob] = now
+
+        if button_action == "play_pause":
+            success, message = set_media_play_pause()
+            if success:
+                self.set_status(f"Channel {channel + 1} toggled media play/pause")
+            else:
+                self.set_status(f"Channel {channel + 1} play/pause failed: {message}")
+            return
+
+        muted = not self.channel_muted[knob]
+        success, message = self.apply_mute_update(knob, muted)
+        if success:
+            self.channel_muted[knob] = muted
+            set_channel_leds(controller, self.led_colors_snapshot())
+            self.root.after(0, self.update_controller_preview, knob)
+            state = "muted" if muted else "unmuted"
+            self.set_status(f"Channel {channel + 1} {state}")
+            return
+
+        action = "mute" if muted else "unmute"
+        self.set_status(f"Channel {channel + 1} {action} failed: {message}")
+
     def control_loop(self):
         try:
             controller = serial.Serial(PORT, BAUD, timeout=0.1)
@@ -1488,7 +1876,6 @@ class TurnUpApp:
             time.sleep(3)
             if self.stop_event.is_set():
                 return
-            controller.reset_input_buffer()
             set_channel_leds(controller, self.led_colors_snapshot())
             self.set_status("Syncing controller state...")
             buffer = b""
@@ -1496,6 +1883,21 @@ class TurnUpApp:
             syncing = True
             sync_started = time.monotonic()
             next_led_refresh = time.monotonic() + LED_REFRESH_SECONDS
+            config = self.config_snapshot()
+            mapped_apps = {
+                app_name
+                for knob in KNOBS
+                for app_name in config.get(knob, [])
+            }
+            known_stream_ids = {
+                app_name: set(stream_ids)
+                for app_name, stream_ids in get_stream_ids(
+                    mapped_apps, get_audio_status()
+                ).items()
+            }
+            if self.last_percent:
+                self.apply_volume_updates(self.last_percent.copy())
+            next_app_control_refresh = time.monotonic() + APP_CONTROL_REFRESH_SECONDS
 
             while not self.stop_event.is_set():
                 now = time.monotonic()
@@ -1514,37 +1916,13 @@ class TurnUpApp:
                     if knob not in KNOBS:
                         continue
                     if event_type == "button":
-                        with self.config_lock:
-                            button_action = self.config["_button_actions"][knob]
-                        if button_action == "none":
-                            continue
-                        now = time.monotonic()
-                        if now - self.last_button_press.get(knob, 0) >= BUTTON_DEBOUNCE_SECONDS:
-                            self.last_button_press[knob] = now
-                            muted = not self.channel_muted[knob]
-                            success, message = self.apply_mute_update(knob, muted)
-                            if success:
-                                self.channel_muted[knob] = muted
-                                set_channel_leds(controller, self.led_colors_snapshot())
-                                self.root.after(0, self.update_controller_preview, knob)
-                                state = "muted" if muted else "unmuted"
-                                self.set_status(f"Channel {channel + 1} {state}")
-                            else:
-                                action = "mute" if muted else "unmute"
-                                self.set_status(f"Channel {channel + 1} {action} failed: {message}")
-                        elif button_action == "play_pause":
-                            success, message = set_media_play_pause()
-                            if success:
-                                self.set_status(f"Channel {channel + 1} toggled media play/pause")
-                            else:
-                                self.set_status(
-                                    f"Channel {channel + 1} play/pause failed: {message}"
-                                )
+                        self.handle_button_press(knob, channel, controller, now)
                         continue
 
                     percent = max(0, min(100, round((value / 1023) * 100)))
                     if syncing:
                         self.last_percent[knob] = percent
+                        updates[knob] = percent
                         synced_channels.add(channel)
                         self.root.after(0, self.update_controller_preview, knob)
                         if (
@@ -1566,6 +1944,14 @@ class TurnUpApp:
 
                 if updates:
                     self.apply_volume_updates(updates)
+
+                if syncing and now - sync_started >= INITIALIZATION_TIMEOUT_SECONDS:
+                    syncing = False
+                    self.root.after(0, self.finish_initialization)
+
+                if now >= next_app_control_refresh:
+                    known_stream_ids = self.apply_new_stream_volumes(known_stream_ids)
+                    next_app_control_refresh = now + APP_CONTROL_REFRESH_SECONDS
         except (OSError, serial.SerialException) as error:
             self.set_status(f"Controller error: {error}")
         finally:
@@ -1586,6 +1972,17 @@ class TurnUpApp:
             for app_name in config.get(knob, []):
                 for stream_id in stream_ids.get(app_name, []):
                     set_volume(stream_id, percent)
+
+    def apply_new_stream_volumes(self, known_stream_ids):
+        current_stream_ids, updates = get_new_stream_volume_updates(
+            self.config_snapshot(),
+            self.last_percent.copy(),
+            known_stream_ids,
+            get_audio_status(),
+        )
+        for stream_id, percent in updates:
+            set_volume(stream_id, percent)
+        return current_stream_ids
 
     def apply_mute_update(self, knob, muted):
         config = self.config_snapshot()
@@ -1613,7 +2010,7 @@ class TurnUpApp:
         return True, ""
 
     def close(self):
-        if self.autostart_var.get() and self._ensure_tray_icon():
+        if self._ensure_tray_icon():
             self.save_config()
             self.root.withdraw()
             self.status_var.set("Turn Up is running in the system tray")

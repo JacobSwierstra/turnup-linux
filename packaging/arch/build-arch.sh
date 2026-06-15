@@ -4,7 +4,7 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 name=turnup
-version=1.0.0
+version=1.1.0
 build_dir="$project_root/build/arch"
 source_dir="$build_dir/$name-$version"
 
