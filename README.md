@@ -1,143 +1,177 @@
+````md
 # Turn Up Linux
 
-Turn Up Linux is an unofficial Linux application for the TurnUp USB Mixer. It provides application volume control, device volume control, mute controls, RGB lighting configuration, profiles, and system tray integration.
+Unofficial Linux support for the TurnUp USB Mixer.
 
-This project is not affiliated with or endorsed by the TurnUp developers. It was created to bring Linux support to TurnUp mixer users.
+Turn Up Linux brings native Linux support to the TurnUp mixer, providing per-application volume control, device management, RGB customization, media controls, profiles, and system tray integration using PipeWire and WirePlumber.
+
+> This project is not affiliated with or endorsed by TurnUp. It is a community-developed Linux implementation for TurnUp mixer users.
+
+---
 
 ## Features
 
-* Application-specific volume control
-* Device volume control
-* RGB LED customization
-* Profile and preset support
-* System tray integration
-* Start with Linux support
-* Native Fedora RPM packaging
-* Fedora COPR repository support
+| Feature | Status |
+|----------|----------|
+| Per-application volume control | ✅ |
+| System audio control | ✅ |
+| Microphone control | ✅ |
+| Mute / unmute buttons | ✅ |
+| RGB LED customization | ✅ |
+| Profiles & presets | ✅ |
+| Media controls (Play/Pause) | ✅ |
+| System tray integration | ✅ |
+| Start with Linux | ✅ |
+| Automatic update checking | ✅ |
+| Fedora COPR packages | ✅ |
+| Debian packages | ✅ |
+| Arch Linux support | ✅ |
 
 ---
 
-## Supported distributions
+## Screenshots
 
-* Python 3
-* Tkinter
-* PySerial
-* Pillow
-* pystray
-* PipeWire / WirePlumber
-* Access to the controller at `/dev/ttyACM0`
+_Add screenshots or GIFs here._
 
 ---
 
-Installation
-Fedora / RHEL
+## Supported Distributions
+
+### Official Packages
+
+- Fedora
+- RHEL
+- Rocky Linux
+- AlmaLinux
+- Debian
+- Ubuntu
+- Linux Mint
+- Pop!_OS
+- Zorin OS
+- Arch Linux
+
+### Generic Installation
+
+Any Linux distribution with:
+
+- Python 3
+- PipeWire
+- WirePlumber
+- Tkinter
+- PySerial
+- Pillow
+- pystray
+
+---
+
+# Installation
+
+## Fedora / RHEL
+
+```bash
 sudo dnf copr enable ezswees/turnup
 sudo dnf install turnup
-Debian / Ubuntu / Linux Mint / Pop!_OS / Zorin
+````
 
-Download the latest .deb package from Releases and install:
+## Debian / Ubuntu / Linux Mint / Pop!_OS / Zorin
 
+Download the latest `.deb` package from the Releases page and install:
+
+```bash
 sudo apt install ./turnup-*.deb
-Arch Linux
+```
+
+## Arch Linux
 
 Build and install using the included PKGBUILD:
 
+```bash
 makepkg -si
-Other Linux Distributions
+```
+
+## Other Linux Distributions
 
 Use the installer script:
 
+```bash
 ./install.sh
-
-Requirements:
-
-Python 3
-PipeWire / WirePlumber
-Tkinter
-PySerial
-Pillow
-pystray
+```
 
 ---
 
-## Build Locally
+# Quick Start
 
-## Start on login
-
-```bash
-sudo dnf install rpm-build
-```
-
-From the repository root:
-
-```bash
-./packaging/rpm/build-rpm.sh
-```
-
-The build uses `build/rpmbuild/` as its private RPM build tree and copies the finished RPM package to the repository root.
-
----
-
-## Install Local RPM
-
-```bash
-sudo dnf install ./turnup-1.1.1-1.fc44.noarch.rpm
-```
-
-Launch Turn Up from the desktop application menu or run:
+Launch Turn Up:
 
 ```bash
 turnup
 ```
 
+On first launch:
+
+1. Connect your TurnUp controller.
+2. Configure application mappings.
+3. Adjust RGB lighting.
+4. Save your preferred profile.
+5. Enable **Start with Linux** if desired.
+
 ---
 
-## Uninstall
+# Building Packages
+
+## Build RPM
 
 ```bash
-sudo dnf remove turnup
+sudo dnf install rpm-build
+./packaging/rpm/build-rpm.sh
 ```
 
-User settings stored in:
+Built RPMs will be placed in:
 
 ```text
-~/.config/turnup-linux/
+build/rpmbuild/RPMS/noarch/
 ```
-
-are intentionally retained when the RPM is removed.
 
 ---
 
-## Run From Source
+# Install Local RPM
 
-### 1. Clone the Repository
+```bash
+sudo dnf install ./turnup-1.1.0-1.fc44.noarch.rpm
+```
+
+---
+
+# Run From Source
+
+## Clone the Repository
 
 ```bash
 git clone https://github.com/JacobSwierstra/turnup-linux.git
 cd turnup-linux
 ```
 
-### 2. Install Dependencies
+## Install Dependencies
 
-On Debian/Ubuntu systems:
-
-```bash
-sudo apt install python3 python3-tk python3-pip python3-serial wireplumber pipewire
-```
-
-If your distribution does not provide PySerial:
+### Debian / Ubuntu
 
 ```bash
-python3 -m pip install --user pyserial
+sudo apt install \
+    python3 \
+    python3-tk \
+    python3-pip \
+    python3-serial \
+    pipewire \
+    wireplumber
 ```
 
-Install tray dependencies if necessary:
+### Additional Python Packages
 
 ```bash
 python3 -m pip install --user pillow pystray
 ```
 
-### 3. Run the Application
+## Run
 
 ```bash
 python3 turnup_gui.py
@@ -145,103 +179,123 @@ python3 turnup_gui.py
 
 ---
 
-## Start With Linux
+# Start With Linux
 
-Use the Settings menu within Turn Up and enable **Start with Linux**.
+Enable **Settings → Start with Linux**.
 
 When enabled:
 
-* Turn Up starts automatically after login
-* The application starts minimized to the system tray
-* Closing the main window keeps the application running in the tray
-* Use the tray menu's **Quit** option to fully exit the application
+* Starts automatically after login
+* Starts minimized to the system tray
+* Closing the window keeps Turn Up running
+* Use **Quit** from the tray menu to fully exit
 
 ---
 
-## Troubleshooting
+# Troubleshooting
 
-### Controller Not Detected
+## Controller Not Detected
 
-The application expects the controller to be available at:
+The controller is expected to appear as:
 
 ```text
 /dev/ttyACM0
 ```
 
-If the controller is not found:
+Try:
 
 1. Disconnect and reconnect the controller.
-2. Open Turn Up.
+2. Restart Turn Up.
 3. Use **Settings → Restart Controller**.
 
-### Serial Permissions
+## Serial Permissions
 
-If the controller is detected but cannot be accessed, add your user to the appropriate serial device group and log out/in:
+Add your user to the serial device group:
 
 ```bash
 sudo usermod -aG dialout $USER
 ```
 
-Some distributions may use a different group name.
+Log out and back in afterward.
 
-### Application List Missing Programs
+> Some distributions may use a different serial device group.
 
-The application list is generated from:
+## Missing Applications
 
+Turn Up discovers applications using:
+
+* PipeWire audio streams
 * Installed desktop applications
-* Active PipeWire audio streams
 
 Launch the target application and refresh the list.
 
 ---
 
-## Configuration Storage
+# Configuration
 
-Turn Up stores configuration under:
+User settings are stored in:
 
 ```text
 ~/.config/turnup-linux/
 ```
 
-This includes:
+Stored data includes:
 
 * Application mappings
-* LED colors
-* Profiles and presets
-* Button actions
+* RGB settings
+* Profiles
+* Presets
 * Startup preferences
+* Button actions
+
+Configuration is intentionally preserved during upgrades and uninstallation.
 
 ---
 
-## GitHub
+# Uninstall
 
-Source code:
+## Fedora / RHEL
+
+```bash
+sudo dnf remove turnup
+```
+
+Configuration files located in `~/.config/turnup-linux/` are retained.
+
+---
+
+# Project Links
+
+## Repository
 
 https://github.com/JacobSwierstra/turnup-linux
 
-Releases:
+## Releases
 
 https://github.com/JacobSwierstra/turnup-linux/releases
 
-Issues and feature requests:
+## Issue Tracker
 
 https://github.com/JacobSwierstra/turnup-linux/issues
 
 ---
 
-## Contributing
+# Contributing
 
 Bug reports, feature requests, and pull requests are welcome.
 
-If you encounter a problem, please include:
+Please include:
 
 * Linux distribution and version
 * Desktop environment
-* Turn Up firmware version (if known)
+* TurnUp firmware version (if known)
 * Relevant logs or screenshots
 
 ---
 
-## License
+# License
 
 See the repository license file for details.
+
+```
+```
