@@ -4,9 +4,10 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 name=turnup
-version=1.1.1
+version=1.1.2
 package_root="$project_root/build/deb/${name}_${version}_all"
-output="$project_root/${name}_${version}_all.deb"
+release_dir="$project_root/releases"
+output="$release_dir/${name}_${version}_all.deb"
 
 command -v dpkg-deb >/dev/null 2>&1 || {
     echo "dpkg-deb is required to build the Debian package." >&2
@@ -35,5 +36,6 @@ Description: Hardware controller for Linux application audio
 EOF
 
 rm -f "$output"
+mkdir -p "$release_dir"
 dpkg-deb --root-owner-group --build "$package_root" "$output"
 printf '\nBuilt package:\n%s\n' "$output"

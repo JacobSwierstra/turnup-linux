@@ -4,9 +4,10 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 name=turnup
-version=1.1.1
+version=1.1.2
 build_dir="$project_root/build/arch"
 source_dir="$build_dir/$name-$version"
+release_dir="$project_root/releases"
 
 command -v makepkg >/dev/null 2>&1 || {
     echo "makepkg is required to build the Arch Linux package." >&2
@@ -31,8 +32,9 @@ install -pm 0644 "$project_root/packaging/arch/PKGBUILD" "$build_dir/PKGBUILD"
 )
 
 for package in "$build_dir"/"$name-$version"-*.pkg.tar.*; do
-    install -pm 0644 "$package" "$project_root/$(basename "$package")"
+    mkdir -p "$release_dir"
+    install -pm 0644 "$package" "$release_dir/$(basename "$package")"
 done
 
 printf '\nBuilt packages:\n'
-find "$project_root" -maxdepth 1 -type f -name "$name-*.pkg.tar.*" -print
+find "$release_dir" -maxdepth 1 -type f -name "$name-*.pkg.tar.*" -print

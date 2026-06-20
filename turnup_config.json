@@ -24,6 +24,13 @@
         "channel_3": "#DC00FF",
         "channel_4": "#FF1D00"
     },
+    "_muted_led_colors": {
+        "channel_0": "#080B10",
+        "channel_1": "#080B10",
+        "channel_2": "#080B10",
+        "channel_3": "#080B10",
+        "channel_4": "#080B10"
+    },
     "_button_actions": {
         "channel_0": "mute",
         "channel_1": "mute",

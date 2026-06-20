@@ -26,7 +26,9 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = CONFIG_DIR / "turnup_config.json"
 PROJECT_ROOT = Path(__file__).resolve().parent
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
+APP_NAME = "Turn Up Linux"
+APP_ID = "turnup-linux"
 LATEST_RELEASE_URL = "https://api.github.com/repos/JacobSwierstra/turnup-linux/releases/latest"
 PORT = "/dev/ttyACM0"
 BAUD = 115200
@@ -46,6 +48,7 @@ BASE_LISTBOX_FONT_SIZE = 11
 
 KNOBS = [f"channel_{index}" for index in range(5)]
 DEFAULT_LED_COLOR = "#FFFFFF"
+DEFAULT_MUTED_LED_COLOR = "#080B10"
 BUTTON_ACTIONS = {"No action": "none", "Mute": "mute", "Play/Pause media": "play_pause"}
 DEFAULT_BUTTON_ACTION = "mute"
 BUILTIN_APP_TARGETS = {
@@ -142,13 +145,13 @@ class AppIndicatorTrayIcon:
         self._loop = GLib.MainLoop()
         self._indicator_module = IndicatorModule
         self._indicator = IndicatorModule.Indicator.new(
-            "turnup-linux", icon_name, IndicatorModule.IndicatorCategory.APPLICATION_STATUS
+            APP_ID, icon_name, IndicatorModule.IndicatorCategory.APPLICATION_STATUS
         )
-        self._indicator.set_title("Turn Up")
+        self._indicator.set_title(APP_NAME)
         self._indicator.set_status(IndicatorModule.IndicatorStatus.ACTIVE)
 
         menu = Gtk.Menu()
-        show_item = Gtk.MenuItem(label="Show Turn Up")
+        show_item = Gtk.MenuItem(label=f"Show {APP_NAME}")
         show_item.connect("activate", lambda *_args: root.after(0, show_callback))
         menu.append(show_item)
         quit_item = Gtk.MenuItem(label="Quit")
@@ -172,6 +175,70 @@ def tray_icon_path():
         Path("/usr/local/share/icons/hicolor/scalable/apps/turnup.svg"),
     )
     return next((path for path in candidates if path.is_file()), None)
+
+
+def build_pil_app_icon(size=64):
+    from PIL import Image, ImageDraw
+
+    scale = size / 256
+    image = Image.new("RGBA", (size, size), (17, 24, 39, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        (0, 0, size, size),
+        radius=round(48 * scale),
+        fill="#111827",
+    )
+    draw.rounded_rectangle(
+        (
+            round(28 * scale),
+            round(28 * scale),
+            round(228 * scale),
+            round(228 * scale),
+        ),
+        radius=round(36 * scale),
+        fill="#2563eb",
+    )
+    for left, top, right, bottom in (
+        (66, 128, 94, 190),
+        (114, 92, 142, 190),
+        (162, 56, 190, 190),
+    ):
+        draw.rounded_rectangle(
+            (
+                round(left * scale),
+                round(top * scale),
+                round(right * scale),
+                round(bottom * scale),
+            ),
+            radius=max(1, round(8 * scale)),
+            fill="#ffffff",
+        )
+    return image
+
+
+def build_tk_app_icon(size=64):
+    try:
+        from PIL import ImageTk
+
+        return ImageTk.PhotoImage(build_pil_app_icon(size))
+    except Exception:
+        pixels = bytearray()
+        for y in range(size):
+            for x in range(size):
+                source_x = x * 256 / size
+                source_y = y * 256 / size
+                color = (17, 24, 39)
+                if 28 <= source_x <= 228 and 28 <= source_y <= 228:
+                    color = (37, 99, 235)
+                if (
+                    66 <= source_x <= 94 and 128 <= source_y <= 190
+                    or 114 <= source_x <= 142 and 92 <= source_y <= 190
+                    or 162 <= source_x <= 190 and 56 <= source_y <= 190
+                ):
+                    color = (255, 255, 255)
+                pixels.extend(color)
+        ppm = f"P6\n{size} {size}\n255\n".encode("ascii") + pixels
+        return tk.PhotoImage(data=ppm, format="PPM")
 
 
 def run_git(project_root, *arguments):
@@ -355,10 +422,12 @@ def build_autostart_entry(python_executable=None, script_path=None):
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=Turn Up\n"
+        f"Name={APP_NAME}\n"
         "Comment=Start the Turn Up Linux audio controller\n"
         f"Exec={command}\n"
+        f"Icon={APP_ID}\n"
         "Terminal=false\n"
+        f"StartupWMClass={APP_ID}\n"
         "X-GNOME-Autostart-enabled=true\n"
     )
 
@@ -383,6 +452,7 @@ def default_config():
         **{knob: [] for knob in KNOBS},
         "_program_names": {},
         "_led_colors": {knob: DEFAULT_LED_COLOR for knob in KNOBS},
+        "_muted_led_colors": {knob: DEFAULT_MUTED_LED_COLOR for knob in KNOBS},
         "_button_actions": {knob: DEFAULT_BUTTON_ACTION for knob in KNOBS},
         "_controller_positions": {},
     }
@@ -436,6 +506,13 @@ def load_config():
     if isinstance(colors, dict):
         config["_led_colors"] = {
             knob: normalize_color(colors.get(knob, DEFAULT_LED_COLOR))
+            for knob in KNOBS
+        }
+
+    muted_colors = saved.get("_muted_led_colors", {})
+    if isinstance(muted_colors, dict):
+        config["_muted_led_colors"] = {
+            knob: normalize_color(muted_colors.get(knob, DEFAULT_MUTED_LED_COLOR))
             for knob in KNOBS
         }
 
@@ -685,7 +762,39 @@ def get_stream_ids(targets, status):
     return resolved
 
 
-def get_new_stream_volume_updates(config, last_percent, known_stream_ids, status):
+def get_stream_volume_percentages(status):
+    volumes = {}
+    in_audio_streams = False
+    for line in status.splitlines():
+        stripped = line.strip()
+        if "Streams:" in stripped:
+            in_audio_streams = True
+            continue
+        if in_audio_streams and stripped.startswith(("Video", "Settings")):
+            break
+        if not in_audio_streams:
+            continue
+
+        match = re.match(r"^[^0-9]*(\d+)\.\s+.+?\[vol:\s*([0-9.]+)", stripped)
+        if match is None:
+            continue
+        volumes[match.group(1)] = max(0, min(100, round(float(match.group(2)) * 100)))
+    return volumes
+
+
+def target_percent_for_app(config, last_percent, app_name, fallback_percent=None):
+    for knob in KNOBS:
+        if app_name in config.get(knob, []):
+            percent = last_percent.get(knob)
+            if percent is not None:
+                return percent
+    return fallback_percent
+
+
+def get_new_stream_volume_updates(
+    config, last_percent, known_stream_ids, status, fallback_percent=None
+):
+    fallback_percent = fallback_percent or {}
     targets = {
         app_name
         for knob in KNOBS
@@ -698,10 +807,12 @@ def get_new_stream_volume_updates(config, last_percent, known_stream_ids, status
     updates = []
 
     for knob in KNOBS:
-        percent = last_percent.get(knob)
-        if percent is None:
-            continue
         for app_name in config.get(knob, []):
+            percent = target_percent_for_app(
+                config, last_percent, app_name, fallback_percent.get(app_name)
+            )
+            if percent is None:
+                continue
             previous_ids = known_stream_ids.get(app_name, set())
             for stream_id in current_stream_ids.get(app_name, set()) - previous_ids:
                 updates.append((stream_id, percent))
@@ -980,11 +1091,14 @@ class TurnUpApp:
         self.stop_event = threading.Event()
         self.controller_thread = None
         self.last_percent = dict(self.config["_controller_positions"])
+        self.last_app_percent = {}
         self.last_button_press = {}
         self.channel_muted = {knob: False for knob in KNOBS}
         self.listboxes = {}
         self.color_buttons = {}
+        self.muted_color_buttons = {}
         self.button_action_vars = {}
+        self.settings_menu = None
         self.channel_cards = {}
         self.preview_items = {}
         self.active_listbox = None
@@ -1013,7 +1127,17 @@ class TurnUpApp:
         self.root.after(350, self.start_controller)
 
     def _configure_window(self):
-        self.root.title("Turn Up - Linux Audio Controller")
+        self.root.title(APP_NAME)
+        self.root.iconname(APP_NAME)
+        try:
+            self.window_icon = build_tk_app_icon(64)
+            self.root.iconphoto(True, self.window_icon)
+        except Exception:
+            self.window_icon = None
+        try:
+            self.root.tk.call("tk", "appname", APP_NAME)
+        except tk.TclError:
+            pass
         self.root.geometry(f"{BASE_UI_WIDTH}x{BASE_UI_HEIGHT}")
         self.root.minsize(820, 620)
         self.root.configure(bg="#111827")
@@ -1072,9 +1196,10 @@ class TurnUpApp:
 
         title_row = ttk.Frame(outer, style="App.TFrame")
         title_row.pack(fill="x")
-        ttk.Label(title_row, text="Turn Up", style="Title.TLabel").pack(side="left")
+        ttk.Label(title_row, text=APP_NAME, style="Title.TLabel").pack(side="left")
         menu_button = ttk.Menubutton(title_row, text="Settings", style="Secondary.TButton")
         settings_menu = tk.Menu(menu_button, tearoff=False)
+        self.settings_menu = settings_menu
         settings_menu.add_command(label="Restart Controller", command=self.restart_controller)
         settings_menu.add_command(label="Refresh App List", command=self.refresh_apps)
         settings_menu.add_command(label="Check for Updates", command=self.check_for_updates)
@@ -1181,8 +1306,10 @@ class TurnUpApp:
             color = self.config["_led_colors"][knob]
             color_button = tk.Button(
                 options,
-                text="LED Color",
-                command=lambda selected_knob=knob: self.choose_led_color(selected_knob),
+                text=f"Active Color  {color}",
+                command=lambda selected_knob=knob: self.choose_led_color(
+                    selected_knob, muted=False
+                ),
                 bg=color,
                 fg=self._contrast_text_color(color),
                 activebackground=color,
@@ -1194,6 +1321,25 @@ class TurnUpApp:
             )
             color_button.pack(fill="x")
             self.color_buttons[knob] = color_button
+
+            muted_color = self.config["_muted_led_colors"][knob]
+            muted_color_button = tk.Button(
+                options,
+                text=f"Muted Color  {muted_color}",
+                command=lambda selected_knob=knob: self.choose_led_color(
+                    selected_knob, muted=True
+                ),
+                bg=muted_color,
+                fg=self._contrast_text_color(muted_color),
+                activebackground=muted_color,
+                activeforeground=self._contrast_text_color(muted_color),
+                relief="flat",
+                borderwidth=0,
+                padx=10,
+                pady=6,
+            )
+            muted_color_button.pack(fill="x", pady=(8, 0))
+            self.muted_color_buttons[knob] = muted_color_button
 
             ttk.Label(options, text="Button Action", style="Hint.TLabel").pack(
                 anchor="w", pady=(10, 3)
@@ -1440,7 +1586,7 @@ class TurnUpApp:
         self.status_var.set("Update installed")
         if messagebox.askyesno(
             "Update installed",
-            "The update was installed successfully. Restart Turn Up now?",
+            f"The update was installed successfully. Restart {APP_NAME} now?",
             parent=self.root,
         ):
             self.restart_application()
@@ -1467,29 +1613,23 @@ class TurnUpApp:
 
         try:
             import pystray
-            from PIL import Image, ImageDraw
+            image = build_pil_app_icon(64)
         except Exception as error:
             messagebox.showerror(
                 "System tray support unavailable",
-                "Turn Up could not create a system tray icon. Install GTK AppIndicator "
+                f"{APP_NAME} could not create a system tray icon. Install GTK AppIndicator "
                 f"or pystray support for your desktop.\n\n{error}",
                 parent=self.root,
             )
             self.root.deiconify()
             return False
 
-        image = Image.new("RGB", (64, 64), "#111827")
-        draw = ImageDraw.Draw(image)
-        draw.rounded_rectangle((8, 8, 56, 56), radius=10, fill="#2563eb")
-        draw.rectangle((18, 30, 24, 46), fill="white")
-        draw.rectangle((29, 22, 35, 46), fill="white")
-        draw.rectangle((40, 14, 46, 46), fill="white")
         self.tray_icon = pystray.Icon(
-            "turnup-linux",
+            APP_ID,
             image,
-            "Turn Up",
+            APP_NAME,
             pystray.Menu(
-                pystray.MenuItem("Show Turn Up", self._tray_show, default=True),
+                pystray.MenuItem(f"Show {APP_NAME}", self._tray_show, default=True),
                 pystray.MenuItem("Quit", self._tray_quit),
             ),
         )
@@ -1644,7 +1784,11 @@ class TurnUpApp:
             if preview is None:
                 continue
             muted = self.channel_muted[item]
-            color = "#080B10" if muted else self.config["_led_colors"][item]
+            color = (
+                self.config["_muted_led_colors"][item]
+                if muted
+                else self.config["_led_colors"][item]
+            )
             self.controller_canvas.itemconfigure(preview["light_arc"], outline=color)
             self.controller_canvas.itemconfigure(
                 preview["face"],
@@ -1728,14 +1872,17 @@ class TurnUpApp:
         red, green, blue = color_to_rgb(color)
         return "#111827" if red * 299 + green * 587 + blue * 114 > 150000 else "#FFFFFF"
 
-    def _set_led_color(self, knob, color):
+    def _set_led_color(self, knob, color, muted=False):
         color = normalize_color(color)
+        config_key = "_muted_led_colors" if muted else "_led_colors"
+        buttons = self.muted_color_buttons if muted else self.color_buttons
+        label = "Muted Color" if muted else "Active Color"
         with self.config_lock:
-            self.config["_led_colors"][knob] = color
-        button = self.color_buttons[knob]
+            self.config[config_key][knob] = color
+        button = buttons[knob]
         text_color = self._contrast_text_color(color)
         button.configure(
-            text=f"LED Color  {color}",
+            text=f"{label}  {color}",
             bg=color,
             fg=text_color,
             activebackground=color,
@@ -1743,22 +1890,27 @@ class TurnUpApp:
         )
         self.update_controller_preview(knob)
 
-    def choose_led_color(self, knob):
-        current = self.config["_led_colors"][knob]
+    def choose_led_color(self, knob, muted=False):
+        config_key = "_muted_led_colors" if muted else "_led_colors"
+        label = "Muted LED Color" if muted else "Active LED Color"
+        current = self.config[config_key][knob]
         dialog = ColorWheelDialog(
             self.root,
-            f"Channel {KNOBS.index(knob) + 1} LED Color",
+            f"Channel {KNOBS.index(knob) + 1} {label}",
             current,
-            lambda color: self._set_led_color(knob, color),
+            lambda color: self._set_led_color(knob, color, muted=muted),
         )
         if dialog.result is None:
-            self._set_led_color(knob, current)
+            self._set_led_color(knob, current, muted=muted)
             return
 
         selected = dialog.result
-        self._set_led_color(knob, selected)
+        self._set_led_color(knob, selected, muted=muted)
         self.save_config()
-        self.status_var.set(f"Channel {KNOBS.index(knob) + 1} LED color set to {selected}")
+        state = "muted" if muted else "active"
+        self.status_var.set(
+            f"Channel {KNOBS.index(knob) + 1} {state} LED color set to {selected}"
+        )
 
     def change_button_action(self, knob):
         action_name = self.button_action_vars[knob].get()
@@ -1794,7 +1946,7 @@ class TurnUpApp:
     def led_colors_snapshot(self):
         with self.config_lock:
             return [
-                (0, 0, 0)
+                color_to_rgb(self.config["_muted_led_colors"][knob])
                 if self.channel_muted[knob]
                 else color_to_rgb(self.config["_led_colors"][knob])
                 for knob in KNOBS
@@ -1895,12 +2047,14 @@ class TurnUpApp:
                 for knob in KNOBS
                 for app_name in config.get(knob, [])
             }
+            audio_status = get_audio_status()
             known_stream_ids = {
                 app_name: set(stream_ids)
                 for app_name, stream_ids in get_stream_ids(
-                    mapped_apps, get_audio_status()
+                    mapped_apps, audio_status
                 ).items()
             }
+            self.remember_app_volumes(config, known_stream_ids, audio_status)
             if self.last_percent:
                 self.apply_volume_updates(self.last_percent.copy())
             next_app_control_refresh = time.monotonic() + APP_CONTROL_REFRESH_SECONDS
@@ -1982,15 +2136,46 @@ class TurnUpApp:
                     set_volume(stream_id, percent)
 
     def apply_new_stream_volumes(self, known_stream_ids):
+        config = self.config_snapshot()
+        status = get_audio_status()
         current_stream_ids, updates = get_new_stream_volume_updates(
-            self.config_snapshot(),
+            config,
             self.last_percent.copy(),
             known_stream_ids,
-            get_audio_status(),
+            status,
+            self.last_app_percent.copy(),
         )
         for stream_id, percent in updates:
             set_volume(stream_id, percent)
+        self.remember_app_volumes(config, current_stream_ids, status, updates)
         return current_stream_ids
+
+    def remember_app_volumes(self, config, current_stream_ids, status, updates=()):
+        stream_volumes = get_stream_volume_percentages(status)
+        applied_volumes = dict(updates)
+
+        for app_name, stream_ids in current_stream_ids.items():
+            percent = target_percent_for_app(config, self.last_percent, app_name)
+            if percent is None:
+                percent = next(
+                    (
+                        applied_volumes[stream_id]
+                        for stream_id in stream_ids
+                        if stream_id in applied_volumes
+                    ),
+                    None,
+                )
+            if percent is None:
+                percent = next(
+                    (
+                        stream_volumes[stream_id]
+                        for stream_id in stream_ids
+                        if stream_id in stream_volumes
+                    ),
+                    None,
+                )
+            if percent is not None:
+                self.last_app_percent[app_name] = percent
 
     def apply_mute_update(self, knob, muted):
         config = self.config_snapshot()
@@ -2017,11 +2202,21 @@ class TurnUpApp:
             return False, errors[0]
         return True, ""
 
+    def _hide_open_menus(self):
+        settings_menu = getattr(self, "settings_menu", None)
+        if settings_menu is None:
+            return
+        try:
+            settings_menu.unpost()
+        except tk.TclError:
+            pass
+
     def close(self):
+        self._hide_open_menus()
         if self._ensure_tray_icon():
             self.save_config()
             self.root.withdraw()
-            self.status_var.set("Turn Up is running in the system tray")
+            self.status_var.set(f"{APP_NAME} is running in the system tray")
             return
         self.exit_app()
 
@@ -2029,6 +2224,7 @@ class TurnUpApp:
         if self.exiting:
             return
         self.exiting = True
+        self._hide_open_menus()
         self.save_config()
         self.stop_event.set()
         if self.initialization_watchdog is not None:
@@ -2039,7 +2235,7 @@ class TurnUpApp:
 
 
 def main():
-    root = tk.Tk()
+    root = tk.Tk(className=APP_ID)
     TurnUpApp(root, start_minimized="--minimized" in sys.argv[1:])
     root.mainloop()
 

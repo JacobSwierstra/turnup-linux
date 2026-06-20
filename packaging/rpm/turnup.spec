@@ -1,5 +1,5 @@
 Name:           turnup
-Version:        1.1.1
+Version:        1.1.2
 Release:        1%{?dist}
 Summary:        Hardware controller for Linux application audio
 
@@ -39,8 +39,16 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} ./install.sh
 %{_datadir}/turnup/
 %{_datadir}/applications/turnup.desktop
 %{_datadir}/icons/hicolor/scalable/apps/turnup.svg
+%{_datadir}/icons/hicolor/scalable/apps/turnup-linux.svg
 
 %changelog
+* Sat Jun 20 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.1.2-1
+- Preserve app volume when media streams pause and resume
+- Add configurable muted LED colors per channel
+- Use Turn Up Linux taskbar metadata and app icon
+- Move release artifacts into a releases directory
+- Hide open settings menus when closing the app
+
 * Mon Jun 15 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.1.1-1
 - Ignore buffered controller button packets during startup synchronization
 

@@ -50,5 +50,6 @@ install -m 0755 "$project_root/bin/turnup" "$bindir/turnup"
 install -m 0644 "$project_root/turnup_gui.py" "$datadir/turnup/turnup_gui.py"
 install -m 0644 "$project_root/data/turnup.desktop" "$datadir/applications/turnup.desktop"
 install -m 0644 "$project_root/data/turnup.svg" "$datadir/icons/hicolor/scalable/apps/turnup.svg"
+install -m 0644 "$project_root/data/turnup.svg" "$datadir/icons/hicolor/scalable/apps/turnup-linux.svg"
 
 printf 'Installed Turn Up under %s%s\n' "${destdir:-}" "$prefix"

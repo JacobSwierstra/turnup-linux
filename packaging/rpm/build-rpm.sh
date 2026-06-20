@@ -4,9 +4,10 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 name=turnup
-version=1.1.1
+version=1.1.2
 topdir="$project_root/build/rpmbuild"
 source_dir="$topdir/SOURCES/$name-$version"
+release_dir="$project_root/releases"
 
 rm -rf "$source_dir"
 mkdir -p "$topdir/BUILD" "$topdir/BUILDROOT" "$topdir/RPMS" "$topdir/SOURCES" "$topdir/SPECS" "$topdir/SRPMS"
@@ -23,12 +24,13 @@ install -pm 0644 "$project_root/packaging/rpm/turnup.spec" "$topdir/SPECS/turnup
 
 rpmbuild -ba --define "_topdir $topdir" "$topdir/SPECS/turnup.spec"
 
+mkdir -p "$release_dir"
 for rpm in "$topdir"/RPMS/*/"$name"-"$version"-*.rpm; do
-    install -pm 0644 "$rpm" "$project_root/$(basename "$rpm")"
+    install -pm 0644 "$rpm" "$release_dir/$(basename "$rpm")"
 done
 for srpm in "$topdir"/SRPMS/"$name"-"$version"-*.src.rpm; do
-    install -pm 0644 "$srpm" "$project_root/$(basename "$srpm")"
+    install -pm 0644 "$srpm" "$release_dir/$(basename "$srpm")"
 done
 
 printf '\nBuilt packages:\n'
-find "$project_root" -maxdepth 1 -type f -name "$name-*.rpm" -print
+find "$release_dir" -maxdepth 1 -type f -name "$name-*.rpm" -print

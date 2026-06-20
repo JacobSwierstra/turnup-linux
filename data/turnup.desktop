@@ -1,11 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=Turn Up
+Name=Turn Up Linux
 GenericName=Audio Controller
 Comment=Control application audio with the Turn Up hardware mixer
 Exec=turnup
-Icon=turnup
+Icon=turnup-linux
 Terminal=false
 Categories=AudioVideo;Audio;
 Keywords=audio;volume;mixer;controller;
 StartupNotify=true
+StartupWMClass=turnup-linux

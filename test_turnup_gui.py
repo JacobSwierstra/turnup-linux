@@ -1,5 +1,6 @@
 import unittest
 import threading
+import tkinter as tk
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -15,6 +16,7 @@ from turnup_gui import (
     discover_audio_streams,
     get_new_stream_volume_updates,
     get_stream_ids,
+    get_stream_volume_percentages,
     normalize_color,
     normalize_button_action,
     package_update_asset,
@@ -133,6 +135,30 @@ class GetStreamIdsTests(unittest.TestCase):
 
         self.assertEqual(updates, [("52", 41)])
 
+    def test_reappearing_stream_uses_remembered_volume_when_controller_unknown(self):
+        config = {"channel_3": ["Spotify"]}
+        status = """Audio
+ ├─ Streams:
+ │    91. Spotify                         [vol: 1.00]
+ ├─ Video
+"""
+
+        _, updates = get_new_stream_volume_updates(
+            config, {}, {"Spotify": set()}, status, {"Spotify": 38}
+        )
+
+        self.assertEqual(updates, [("91", 38)])
+
+    def test_parses_stream_volume_percentages(self):
+        status = """Audio
+ ├─ Streams:
+ │    52. Firefox                         [vol: 0.37]
+ │    91. Spotify                         [vol: 1.00]
+ ├─ Video
+"""
+
+        self.assertEqual(get_stream_volume_percentages(status), {"52": 37, "91": 100})
+
 
 class DesktopDiscoveryTests(unittest.TestCase):
     def test_keeps_audio_apps_and_filters_system_apps(self):
@@ -199,6 +225,19 @@ class ConfigTests(unittest.TestCase):
                 config = load_config()
 
         self.assertEqual(config["_controller_positions"], {"channel_3": 37})
+
+    def test_restores_muted_led_colors(self):
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "turnup_config.json"
+            config_path.write_text(
+                '{"_muted_led_colors": {"channel_1": "#12abEF", "invalid": "#000000"}}',
+                encoding="utf-8",
+            )
+            with patch("turnup_gui.CONFIG_FILE", config_path):
+                config = load_config()
+
+        self.assertEqual(config["_muted_led_colors"]["channel_1"], "#12ABEF")
+        self.assertEqual(config["_muted_led_colors"]["channel_0"], "#080B10")
 
 class MuteControlTests(unittest.TestCase):
     @patch("turnup_gui.subprocess.run")
@@ -285,6 +324,19 @@ class MuteControlTests(unittest.TestCase):
         self.assertEqual(message[0:2], bytes((0xFE, 0x05)))
         self.assertEqual(message[-1], 0xFF)
 
+    def test_muted_channel_uses_configured_led_color(self):
+        app = TurnUpApp.__new__(TurnUpApp)
+        app.config_lock = threading.Lock()
+        app.config = {
+            "_led_colors": {f"channel_{index}": "#FFFFFF" for index in range(5)},
+            "_muted_led_colors": {f"channel_{index}": "#000000" for index in range(5)},
+        }
+        app.config["_muted_led_colors"]["channel_2"] = "#123456"
+        app.channel_muted = {f"channel_{index}": False for index in range(5)}
+        app.channel_muted["channel_2"] = True
+
+        self.assertEqual(app.led_colors_snapshot()[2], (18, 52, 86))
+
     def test_color_helpers_validate_and_convert_hex(self):
         self.assertEqual(normalize_color("#12abEF"), "#12ABEF")
         self.assertEqual(normalize_color("invalid"), "#FFFFFF")
@@ -362,6 +414,9 @@ class AutostartTests(unittest.TestCase):
             'Exec="/opt/Python 3/python" "/home/user/Turn Up/app.py" --minimized',
             entry,
         )
+        self.assertIn("Name=Turn Up Linux", entry)
+        self.assertIn("Icon=turnup-linux", entry)
+        self.assertIn("StartupWMClass=turnup-linux", entry)
         self.assertIn("Terminal=false", entry)
 
     def test_autostart_can_be_enabled_and_disabled(self):
@@ -370,7 +425,7 @@ class AutostartTests(unittest.TestCase):
 
             set_autostart_enabled(True, path)
             self.assertTrue(is_autostart_enabled(path))
-            self.assertIn("Name=Turn Up", path.read_text(encoding="utf-8"))
+            self.assertIn("Name=Turn Up Linux", path.read_text(encoding="utf-8"))
 
             set_autostart_enabled(False, path)
             self.assertFalse(is_autostart_enabled(path))
@@ -421,11 +476,22 @@ class TrayTests(unittest.TestCase):
         app.root = Mock()
         app.status_var = Mock()
         app.exit_app = Mock()
+        app.settings_menu = Mock()
 
         app.close()
 
+        app.settings_menu.unpost.assert_called_once_with()
         app.root.withdraw.assert_called_once_with()
         app.exit_app.assert_not_called()
+
+    def test_close_ignores_already_closed_settings_menu(self):
+        app = TurnUpApp.__new__(TurnUpApp)
+        app.settings_menu = Mock()
+        app.settings_menu.unpost.side_effect = tk.TclError()
+
+        app._hide_open_menus()
+
+        app.settings_menu.unpost.assert_called_once_with()
 
 
 if __name__ == "__main__":
