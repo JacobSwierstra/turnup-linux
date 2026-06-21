@@ -4,7 +4,7 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 name=turnup
-version=1.1.2
+version=1.1.3
 topdir="$project_root/build/rpmbuild"
 source_dir="$topdir/SOURCES/$name-$version"
 release_dir="$project_root/releases"

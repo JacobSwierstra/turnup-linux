@@ -14,9 +14,13 @@ from turnup_gui import (
     discover_app_targets,
     discover_desktop_apps,
     discover_audio_streams,
+    get_current_stream_volume_targets,
     get_new_stream_volume_updates,
+    parse_audio_stream_event,
+    parse_pactl_sink_input_ids,
     get_stream_ids,
     get_stream_volume_percentages,
+    is_audio_stream_event,
     normalize_color,
     normalize_button_action,
     package_update_asset,
@@ -101,7 +105,7 @@ class GetStreamIdsTests(unittest.TestCase):
         self.assertIn("Master Volume", targets)
         self.assertEqual(targets["Custom Player"], ("Custom Player",))
 
-    def test_new_stream_uses_current_controller_position_once(self):
+    def test_new_stream_uses_current_controller_position(self):
         config = {"channel_0": ["Firefox"]}
         status = """Audio
  ├─ Streams:
@@ -112,13 +116,51 @@ class GetStreamIdsTests(unittest.TestCase):
         current, updates = get_new_stream_volume_updates(
             config, {"channel_0": 73}, {"Firefox": set()}, status
         )
+        applied_status = """Audio
+ ├─ Streams:
+ │    52. Firefox                         [vol: 0.73]
+ ├─ Video
+"""
         _, repeated_updates = get_new_stream_volume_updates(
-            config, {"channel_0": 73}, current, status
+            config, {"channel_0": 73}, current, applied_status
         )
 
         self.assertEqual(current, {"Firefox": {"52"}})
         self.assertEqual(updates, [("52", 73)])
         self.assertEqual(repeated_updates, [])
+
+    def test_existing_stream_volume_drift_is_corrected(self):
+        config = {"channel_0": ["Firefox"]}
+        status = """Audio
+ ├─ Streams:
+ │    52. Firefox                         [vol: 0.50]
+ ├─ Video
+"""
+
+        _, updates = get_new_stream_volume_updates(
+            config, {"channel_0": 73}, {"Firefox": {"52"}}, status
+        )
+
+        self.assertEqual(updates, [("52", 73)])
+
+    def test_current_stream_volume_targets_force_all_mapped_players(self):
+        config = {
+            "channel_0": ["Firefox"],
+            "channel_1": ["VLC"],
+        }
+        status = """Audio
+ ├─ Streams:
+ │    52. Firefox                         [vol: 1.00]
+ │    91. VLC                             [vol: 0.10]
+ ├─ Video
+"""
+
+        current, updates = get_current_stream_volume_targets(
+            config, {"channel_0": 73, "channel_1": 34}, status
+        )
+
+        self.assertEqual(current, {"Firefox": {"52"}, "VLC": {"91"}})
+        self.assertEqual(sorted(updates), [("52", 73), ("91", 34)])
 
     def test_reappearing_stream_is_treated_as_new(self):
         config = {"channel_1": ["Firefox"]}
@@ -135,7 +177,7 @@ class GetStreamIdsTests(unittest.TestCase):
 
         self.assertEqual(updates, [("52", 41)])
 
-    def test_reappearing_stream_uses_remembered_volume_when_controller_unknown(self):
+    def test_reappearing_stream_does_not_use_stream_volume_when_controller_unknown(self):
         config = {"channel_3": ["Spotify"]}
         status = """Audio
  ├─ Streams:
@@ -144,10 +186,10 @@ class GetStreamIdsTests(unittest.TestCase):
 """
 
         _, updates = get_new_stream_volume_updates(
-            config, {}, {"Spotify": set()}, status, {"Spotify": 38}
+            config, {}, {"Spotify": set()}, status
         )
 
-        self.assertEqual(updates, [("91", 38)])
+        self.assertEqual(updates, [])
 
     def test_parses_stream_volume_percentages(self):
         status = """Audio
@@ -158,6 +200,42 @@ class GetStreamIdsTests(unittest.TestCase):
 """
 
         self.assertEqual(get_stream_volume_percentages(status), {"52": 37, "91": 100})
+
+    def test_detects_audio_stream_events(self):
+        self.assertTrue(is_audio_stream_event("Event 'change' on sink-input #52"))
+        self.assertTrue(is_audio_stream_event("Event 'new' on source-output #13"))
+        self.assertFalse(is_audio_stream_event("Event 'change' on card #2"))
+
+    def test_parses_audio_stream_event_ids(self):
+        self.assertEqual(
+            parse_audio_stream_event("Event 'change' on sink-input #52"),
+            ("sink-input", "52"),
+        )
+        self.assertEqual(
+            parse_audio_stream_event("Event 'change' on card #2"),
+            (None, None),
+        )
+
+    def test_parses_pactl_sink_input_ids_for_mapped_apps(self):
+        status = """Sink Input #52
+        Properties:
+                application.name = "Example Player"
+                media.name = "Playback"
+Sink Input #91
+        Properties:
+                application.name = "Chat App"
+                media.name = "Voice"
+"""
+
+        resolved = parse_pactl_sink_input_ids({"Example Player", "Chat App"}, status)
+
+        self.assertEqual(
+            resolved,
+            {
+                "Example Player": ["pactl:52"],
+                "Chat App": ["pactl:91"],
+            },
+        )
 
 
 class DesktopDiscoveryTests(unittest.TestCase):

@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -26,7 +27,7 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = CONFIG_DIR / "turnup_config.json"
 PROJECT_ROOT = Path(__file__).resolve().parent
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_NAME = "Turn Up Linux"
 APP_ID = "turnup-linux"
 LATEST_RELEASE_URL = "https://api.github.com/repos/JacobSwierstra/turnup-linux/releases/latest"
@@ -35,7 +36,10 @@ BAUD = 115200
 VOLUME_STEP = 2
 BUTTON_DEBOUNCE_SECONDS = 0.2
 LED_REFRESH_SECONDS = 0.1
-APP_CONTROL_REFRESH_SECONDS = 0.25
+APP_CONTROL_REFRESH_SECONDS = 0.05
+CONTROLLER_READ_TIMEOUT_SECONDS = 0.02
+VOLUME_GUARD_SECONDS = 0.8
+VOLUME_GUARD_REFRESH_SECONDS = 0.02
 INITIALIZATION_TIMEOUT_SECONDS = 2.5
 INITIALIZATION_WATCHDOG_MS = 6000
 CONTROLLER_PREVIEW_HEIGHT = 150
@@ -782,19 +786,17 @@ def get_stream_volume_percentages(status):
     return volumes
 
 
-def target_percent_for_app(config, last_percent, app_name, fallback_percent=None):
+def target_percent_for_app(config, last_percent, app_name):
     for knob in KNOBS:
         if app_name in config.get(knob, []):
             percent = last_percent.get(knob)
             if percent is not None:
                 return percent
-    return fallback_percent
+    return None
 
 
-def get_new_stream_volume_updates(
-    config, last_percent, known_stream_ids, status, fallback_percent=None
-):
-    fallback_percent = fallback_percent or {}
+def get_new_stream_volume_updates(config, last_percent, known_stream_ids, status):
+    stream_volumes = get_stream_volume_percentages(status)
     targets = {
         app_name
         for knob in KNOBS
@@ -808,16 +810,64 @@ def get_new_stream_volume_updates(
 
     for knob in KNOBS:
         for app_name in config.get(knob, []):
-            percent = target_percent_for_app(
-                config, last_percent, app_name, fallback_percent.get(app_name)
-            )
+            percent = target_percent_for_app(config, last_percent, app_name)
             if percent is None:
                 continue
             previous_ids = known_stream_ids.get(app_name, set())
-            for stream_id in current_stream_ids.get(app_name, set()) - previous_ids:
+            for stream_id in current_stream_ids.get(app_name, set()):
+                if (
+                    stream_id not in previous_ids
+                    or stream_volumes.get(stream_id) != percent
+                ):
+                    updates.append((stream_id, percent))
+
+    return current_stream_ids, updates
+
+
+def get_current_stream_volume_targets(config, last_percent, status):
+    targets = {
+        app_name
+        for knob in KNOBS
+        for app_name in config.get(knob, [])
+        if last_percent.get(knob) is not None
+    }
+    resolved = get_stream_ids(targets, status)
+    current_stream_ids = {
+        app_name: set(stream_ids) for app_name, stream_ids in resolved.items()
+    }
+    updates = []
+
+    for knob in KNOBS:
+        percent = last_percent.get(knob)
+        if percent is None:
+            continue
+        for app_name in config.get(knob, []):
+            for stream_id in current_stream_ids.get(app_name, set()):
                 updates.append((stream_id, percent))
 
     return current_stream_ids, updates
+
+
+def get_pactl_channel_volume_targets(config, last_percent):
+    targets = {
+        app_name
+        for knob in KNOBS
+        for app_name in config.get(knob, [])
+        if last_percent.get(knob) is not None
+    }
+    stream_ids = get_pactl_sink_input_ids(targets)
+    volume_targets = {}
+
+    for knob in KNOBS:
+        percent = last_percent.get(knob)
+        if percent is None:
+            continue
+        for app_name in config.get(knob, []):
+            for stream_id in stream_ids.get(app_name, []):
+                sink_input = str(stream_id).split(":", 1)[1]
+                volume_targets[sink_input] = percent
+
+    return volume_targets
 
 def get_spotify_pactl_fallback():
     result = subprocess.run(
@@ -849,6 +899,115 @@ def get_pactl_sink_inputs(search_terms):
             ids.append(f"pactl:{sink_id}")
 
     return ids
+
+
+def parse_audio_stream_event(line):
+    lowered = line.lower()
+    if "sink-input" not in lowered and "source-output" not in lowered:
+        return None, None
+    match = re.search(r"\b(sink-input|source-output)\s+#?(\d+)", lowered)
+    if match is None:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def is_audio_stream_event(line):
+    event_type, _event_id = parse_audio_stream_event(line)
+    return event_type is not None
+
+
+def parse_pactl_sink_input_ids(targets, status):
+    resolved = {target: [] for target in targets}
+    searchable = {
+        target: target_search_terms(target)
+        for target in targets
+        if not target_audio_value(target).startswith("@DEFAULT_AUDIO_")
+        and not target_audio_value(target).isdigit()
+    }
+    current_id = None
+    current_lines = []
+
+    def flush_current():
+        if current_id is None:
+            return
+        lowered = "\n".join(current_lines).lower()
+        for target, search_terms in searchable.items():
+            if any(search_name in lowered for search_name in search_terms):
+                resolved[target].append(f"pactl:{current_id}")
+
+    for line in status.splitlines():
+        match = re.match(r"\s*Sink Input #(\d+)", line)
+        if match is not None:
+            flush_current()
+            current_id = match.group(1)
+            current_lines = [line]
+            continue
+        if current_id is not None:
+            current_lines.append(line)
+    flush_current()
+
+    return resolved
+
+
+def get_pactl_sink_input_ids(targets):
+    try:
+        result = subprocess.run(
+            ["pactl", "list", "sink-inputs"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {target: [] for target in targets}
+    return parse_pactl_sink_input_ids(targets, result.stdout)
+
+
+class AudioEventWatcher:
+    def __init__(self):
+        self.process = None
+        self.stdout = None
+        try:
+            self.process = subprocess.Popen(
+                ["pactl", "subscribe"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+            self.stdout = self.process.stdout
+        except OSError:
+            self.process = None
+
+    def audio_stream_event_ids(self):
+        if self.process is None or self.stdout is None:
+            return set()
+        if self.process.poll() is not None:
+            return set()
+
+        event_ids = set()
+        while True:
+            ready, _, _ = select.select([self.stdout], [], [], 0)
+            if not ready:
+                break
+            line = self.stdout.readline()
+            if line == "":
+                break
+            event_type, event_id = parse_audio_stream_event(line)
+            if event_type == "sink-input" and event_id is not None:
+                event_ids.add(event_id)
+        return event_ids
+
+    def close(self):
+        if self.process is None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=1)
+
 
 def set_volume(target, percent):
     if str(target).startswith("pactl:"):
@@ -1091,7 +1250,6 @@ class TurnUpApp:
         self.stop_event = threading.Event()
         self.controller_thread = None
         self.last_percent = dict(self.config["_controller_positions"])
-        self.last_app_percent = {}
         self.last_button_press = {}
         self.channel_muted = {knob: False for knob in KNOBS}
         self.listboxes = {}
@@ -2019,8 +2177,11 @@ class TurnUpApp:
         self.set_status(f"Channel {channel + 1} {action} failed: {message}")
 
     def control_loop(self):
+        audio_events = None
         try:
-            controller = serial.Serial(PORT, BAUD, timeout=0.1)
+            controller = serial.Serial(
+                PORT, BAUD, timeout=CONTROLLER_READ_TIMEOUT_SECONDS
+            )
         except (OSError, serial.SerialException) as error:
             self.set_status(f"Serial connection failed: {error}")
             self.root.after(
@@ -2054,10 +2215,13 @@ class TurnUpApp:
                     mapped_apps, audio_status
                 ).items()
             }
-            self.remember_app_volumes(config, known_stream_ids, audio_status)
             if self.last_percent:
                 self.apply_volume_updates(self.last_percent.copy())
             next_app_control_refresh = time.monotonic() + APP_CONTROL_REFRESH_SECONDS
+            audio_events = AudioEventWatcher()
+            volume_guard_until = 0
+            next_volume_guard_refresh = 0
+            pactl_volume_targets = self.pactl_volume_targets()
 
             while not self.stop_event.is_set():
                 now = time.monotonic()
@@ -2106,10 +2270,33 @@ class TurnUpApp:
 
                 if updates:
                     self.apply_volume_updates(updates)
+                    pactl_volume_targets = self.pactl_volume_targets()
 
                 if syncing and now - sync_started >= INITIALIZATION_TIMEOUT_SECONDS:
                     syncing = False
                     self.root.after(0, self.finish_initialization)
+
+                audio_event_ids = audio_events.audio_stream_event_ids()
+                if audio_event_ids:
+                    self.apply_cached_pactl_volume_targets(
+                        pactl_volume_targets, audio_event_ids
+                    )
+                    known_stream_ids = self.force_current_stream_volumes()
+                    pactl_volume_targets = self.pactl_volume_targets()
+                    self.apply_cached_pactl_volume_targets(
+                        pactl_volume_targets, audio_event_ids
+                    )
+                    volume_guard_until = max(
+                        volume_guard_until, now + VOLUME_GUARD_SECONDS
+                    )
+                    next_volume_guard_refresh = now + VOLUME_GUARD_REFRESH_SECONDS
+                    next_app_control_refresh = now + APP_CONTROL_REFRESH_SECONDS
+
+                if now < volume_guard_until and now >= next_volume_guard_refresh:
+                    self.apply_cached_pactl_volume_targets(pactl_volume_targets)
+                    known_stream_ids = self.force_current_stream_volumes()
+                    pactl_volume_targets = self.pactl_volume_targets()
+                    next_volume_guard_refresh = now + VOLUME_GUARD_REFRESH_SECONDS
 
                 if now >= next_app_control_refresh:
                     known_stream_ids = self.apply_new_stream_volumes(known_stream_ids)
@@ -2117,6 +2304,8 @@ class TurnUpApp:
         except (OSError, serial.SerialException) as error:
             self.set_status(f"Controller error: {error}")
         finally:
+            if audio_events is not None:
+                audio_events.close()
             controller.close()
             if not self.stop_event.is_set():
                 self.set_status("Controller disconnected")
@@ -2143,39 +2332,36 @@ class TurnUpApp:
             self.last_percent.copy(),
             known_stream_ids,
             status,
-            self.last_app_percent.copy(),
         )
         for stream_id, percent in updates:
             set_volume(stream_id, percent)
-        self.remember_app_volumes(config, current_stream_ids, status, updates)
         return current_stream_ids
 
-    def remember_app_volumes(self, config, current_stream_ids, status, updates=()):
-        stream_volumes = get_stream_volume_percentages(status)
-        applied_volumes = dict(updates)
+    def force_current_stream_volumes(self):
+        config = self.config_snapshot()
+        current_stream_ids, updates = get_current_stream_volume_targets(
+            config,
+            self.last_percent.copy(),
+            get_audio_status(),
+        )
+        for stream_id, percent in updates:
+            set_volume(stream_id, percent)
+        return current_stream_ids
 
-        for app_name, stream_ids in current_stream_ids.items():
-            percent = target_percent_for_app(config, self.last_percent, app_name)
-            if percent is None:
-                percent = next(
-                    (
-                        applied_volumes[stream_id]
-                        for stream_id in stream_ids
-                        if stream_id in applied_volumes
-                    ),
-                    None,
-                )
-            if percent is None:
-                percent = next(
-                    (
-                        stream_volumes[stream_id]
-                        for stream_id in stream_ids
-                        if stream_id in stream_volumes
-                    ),
-                    None,
-                )
-            if percent is not None:
-                self.last_app_percent[app_name] = percent
+    def pactl_volume_targets(self):
+        return get_pactl_channel_volume_targets(
+            self.config_snapshot(),
+            self.last_percent.copy(),
+        )
+
+    def apply_cached_pactl_volume_targets(self, volume_targets, event_ids=None):
+        allowed_ids = (
+            None if event_ids is None else {str(event_id) for event_id in event_ids}
+        )
+        for sink_input, percent in volume_targets.items():
+            if allowed_ids is not None and sink_input not in allowed_ids:
+                continue
+            set_volume(f"pactl:{sink_input}", percent)
 
     def apply_mute_update(self, knob, muted):
         config = self.config_snapshot()

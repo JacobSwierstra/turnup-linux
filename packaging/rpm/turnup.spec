@@ -1,5 +1,5 @@
 Name:           turnup
-Version:        1.1.2
+Version:        1.1.3
 Release:        1%{?dist}
 Summary:        Hardware controller for Linux application audio
 
@@ -42,6 +42,9 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} ./install.sh
 %{_datadir}/icons/hicolor/scalable/apps/turnup-linux.svg
 
 %changelog
+* Sat Jun 20 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.1.3-1
+- Keep mapped media player streams pinned to channel volume during seek, skip, and stream changes
+
 * Sat Jun 20 2026 Jacob Swierstra <jacobswierstra@users.noreply.github.com> - 1.1.2-1
 - Preserve app volume when media streams pause and resume
 - Add configurable muted LED colors per channel
