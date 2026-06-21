@@ -4,7 +4,7 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 name=turnup
-version=1.1.3
+version=1.1.4
 package_root="$project_root/build/deb/${name}_${version}_all"
 release_dir="$project_root/releases"
 output="$release_dir/${name}_${version}_all.deb"

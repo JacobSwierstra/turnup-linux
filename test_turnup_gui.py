@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from turnup_gui import (
+    APP_TARGETS,
     actionable_controller_events,
     build_autostart_entry,
     build_light_message,
@@ -61,11 +62,40 @@ class GetStreamIdsTests(unittest.TestCase):
 
         self.assertEqual(resolved["Spotify"], ["91"])
 
+    @patch("turnup_gui.subprocess.run")
+    def test_absent_spotify_does_not_fall_back_to_first_sink_input(self, run):
+        run.return_value = Mock(stdout="3335\t60\t...\n", returncode=0)
+        status = """Audio
+ ├─ Streams:
+ │    104. WEBRTC VoiceEngine               [vol: 0.98]
+ ├─ Video
+"""
+
+        resolved = get_stream_ids({"Discord Voice", "Spotify"}, status)
+
+        self.assertEqual(resolved["Discord Voice"], ["104"])
+        self.assertEqual(resolved["Spotify"], [])
+        run.assert_not_called()
+
     def test_keeps_direct_audio_targets(self):
         resolved = get_stream_ids({"Master Volume", "Line In / Capture"}, "")
 
         self.assertEqual(resolved["Master Volume"], ["@DEFAULT_AUDIO_SINK@"])
         self.assertEqual(resolved["Line In / Capture"], ["70"])
+
+    def test_discord_voice_stream_does_not_match_discord_app_channel(self):
+        status = """Audio
+ ├─ Streams:
+ │    52. WEBRTC VoiceEngine              [vol: 0.50]
+ │        application.name = Discord
+ ├─ Video
+"""
+
+        with patch.dict(APP_TARGETS, {"Discord": ("Discord",)}, clear=False):
+            resolved = get_stream_ids({"Discord", "Discord Voice"}, status)
+
+        self.assertEqual(resolved["Discord"], [])
+        self.assertEqual(resolved["Discord Voice"], ["52"])
 
     def test_parses_knob_packets(self):
         packet = bytes((0xFF, 0xFE, 0x03, 0x02, 0x00, 0x66))
@@ -236,6 +266,21 @@ Sink Input #91
                 "Chat App": ["pactl:91"],
             },
         )
+
+    def test_pactl_discord_voice_stream_does_not_match_discord_app_channel(self):
+        status = """Sink Input #52
+        Properties:
+                application.name = "Discord"
+                media.name = "WEBRTC VoiceEngine"
+"""
+
+        with patch.dict(APP_TARGETS, {"Discord": ("Discord",)}, clear=False):
+            resolved = parse_pactl_sink_input_ids(
+                {"Discord", "Discord Voice"}, status
+            )
+
+        self.assertEqual(resolved["Discord"], [])
+        self.assertEqual(resolved["Discord Voice"], ["pactl:52"])
 
 
 class DesktopDiscoveryTests(unittest.TestCase):

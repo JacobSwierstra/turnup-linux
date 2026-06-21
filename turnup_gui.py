@@ -27,7 +27,7 @@ CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = CONFIG_DIR / "turnup_config.json"
 PROJECT_ROOT = Path(__file__).resolve().parent
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 APP_NAME = "Turn Up Linux"
 APP_ID = "turnup-linux"
 LATEST_RELEASE_URL = "https://api.github.com/repos/JacobSwierstra/turnup-linux/releases/latest"
@@ -726,6 +726,27 @@ def target_audio_value(target):
     return str(real_target)
 
 
+def best_matching_target(searchable, text):
+    lowered = text.lower()
+    best_target = None
+    best_score = (-1, -1)
+
+    for target in sorted(searchable):
+        matched_lengths = [
+            len(search_name)
+            for search_name in searchable[target]
+            if search_name and search_name in lowered
+        ]
+        if not matched_lengths:
+            continue
+        score = (max(matched_lengths), len(str(target)))
+        if score > best_score:
+            best_target = target
+            best_score = score
+
+    return best_target
+
+
 def get_stream_ids(targets, status):
     resolved = {target: [] for target in targets}
     searchable = {}
@@ -755,10 +776,9 @@ def get_stream_ids(targets, status):
         if id_match is None:
             continue
         stream_id = id_match.group(1)
-        lowered = stripped.lower()
-        for target, search_terms in searchable.items():
-            if any(search_name in lowered for search_name in search_terms):
-                resolved[target].append(stream_id)
+        target = best_matching_target(searchable, stripped)
+        if target is not None:
+            resolved[target].append(stream_id)
 
     if "Spotify" in resolved and not resolved["Spotify"]:
         resolved["Spotify"] = get_spotify_pactl_fallback()
@@ -870,16 +890,6 @@ def get_pactl_channel_volume_targets(config, last_percent):
     return volume_targets
 
 def get_spotify_pactl_fallback():
-    result = subprocess.run(
-        ["pactl", "list", "short", "sink-inputs"],
-        capture_output=True,
-        text=True
-    )
-
-    for line in result.stdout.splitlines():
-        sink_id = line.split()[0]
-        return [f"pactl:{sink_id}"]
-
     return []
 
 def get_pactl_sink_inputs(search_terms):
@@ -930,10 +940,9 @@ def parse_pactl_sink_input_ids(targets, status):
     def flush_current():
         if current_id is None:
             return
-        lowered = "\n".join(current_lines).lower()
-        for target, search_terms in searchable.items():
-            if any(search_name in lowered for search_name in search_terms):
-                resolved[target].append(f"pactl:{current_id}")
+        target = best_matching_target(searchable, "\n".join(current_lines))
+        if target is not None:
+            resolved[target].append(f"pactl:{current_id}")
 
     for line in status.splitlines():
         match = re.match(r"\s*Sink Input #(\d+)", line)
