@@ -1,3 +1,4 @@
+import os
 import unittest
 import threading
 import tkinter as tk
@@ -7,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from turnup_gui import (
     APP_TARGETS,
+    AudioEventWatcher,
     actionable_controller_events,
     build_autostart_entry,
     build_light_message,
@@ -235,6 +237,35 @@ class GetStreamIdsTests(unittest.TestCase):
         self.assertTrue(is_audio_stream_event("Event 'change' on sink-input #52"))
         self.assertTrue(is_audio_stream_event("Event 'new' on source-output #13"))
         self.assertFalse(is_audio_stream_event("Event 'change' on card #2"))
+
+    def _watcher_with_events(self, data):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, data)
+        self.addCleanup(os.close, write_fd)
+        watcher = AudioEventWatcher.__new__(AudioEventWatcher)
+        watcher.process = Mock(poll=Mock(return_value=None))
+        watcher.stdout = os.fdopen(read_fd, "r")
+        self.addCleanup(watcher.stdout.close)
+        watcher.pending = ""
+        return watcher
+
+    def test_volume_change_events_do_not_trigger_volume_reapply(self):
+        watcher = self._watcher_with_events(
+            b"Event 'change' on sink-input #52\nEvent 'remove' on sink-input #50\n"
+        )
+        self.assertEqual(watcher.audio_stream_event_ids(), set())
+
+    def test_all_pending_new_stream_events_are_read_at_once(self):
+        watcher = self._watcher_with_events(
+            b"Event 'new' on sink-input #53\nEvent 'change' on sink-input #53\n"
+            b"Event 'new' on sink-input #54\n"
+        )
+        self.assertEqual(watcher.audio_stream_event_ids(), {"53", "54"})
+
+    def test_partial_event_line_is_kept_until_complete(self):
+        watcher = self._watcher_with_events(b"Event 'new' on sink-input #5")
+        self.assertEqual(watcher.audio_stream_event_ids(), set())
+        self.assertEqual(watcher.pending, "Event 'new' on sink-input #5")
 
     def test_parses_audio_stream_event_ids(self):
         self.assertEqual(

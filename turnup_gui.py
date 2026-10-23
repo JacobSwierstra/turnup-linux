@@ -36,7 +36,7 @@ BAUD = 115200
 VOLUME_STEP = 2
 BUTTON_DEBOUNCE_SECONDS = 0.2
 LED_REFRESH_SECONDS = 0.1
-APP_CONTROL_REFRESH_SECONDS = 0.05
+APP_CONTROL_REFRESH_SECONDS = 1.0
 CONTROLLER_READ_TIMEOUT_SECONDS = 0.02
 VOLUME_GUARD_SECONDS = 0.8
 VOLUME_GUARD_REFRESH_SECONDS = 0.02
@@ -976,6 +976,7 @@ class AudioEventWatcher:
     def __init__(self):
         self.process = None
         self.stdout = None
+        self.pending = ""
         try:
             self.process = subprocess.Popen(
                 ["pactl", "subscribe"],
@@ -995,15 +996,19 @@ class AudioEventWatcher:
             return set()
 
         event_ids = set()
+        fd = self.stdout.fileno()
         while True:
-            ready, _, _ = select.select([self.stdout], [], [], 0)
+            ready, _, _ = select.select([fd], [], [], 0)
             if not ready:
                 break
-            line = self.stdout.readline()
-            if line == "":
+            chunk = os.read(fd, 65536)
+            if not chunk:
                 break
+            self.pending += chunk.decode("utf-8", "replace")
+        *lines, self.pending = self.pending.split("\n")
+        for line in lines:
             event_type, event_id = parse_audio_stream_event(line)
-            if event_type == "sink-input" and event_id is not None:
+            if event_type == "sink-input" and event_id is not None and "'new'" in line:
                 event_ids.add(event_id)
         return event_ids
 
